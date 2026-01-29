@@ -15,10 +15,14 @@ from .const import (
     CONF_MQTT_TOPIC,
     CONF_MQTT_TLS,
     CONF_MQTT_CA_CERT,
+    CONF_MQTT_USERNAME,
+    CONF_MQTT_PASSWORD,
     DEFAULT_MQTT_BROKER,
     DEFAULT_MQTT_PORT,
     DEFAULT_MQTT_TOPIC,
     DEFAULT_MQTT_TLS,
+    DEFAULT_MQTT_USERNAME,
+    DEFAULT_MQTT_PASSWORD,
 )
 
 
@@ -102,6 +106,20 @@ class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
                         DEFAULT_MQTT_TLS,
                     ),
                 ): bool,
+                vol.Required(
+                    CONF_MQTT_USERNAME,
+                    default=options.get(
+                        CONF_MQTT_USERNAME,
+                        DEFAULT_MQTT_USERNAME,
+                    ),
+                ): str,
+                vol.Required(
+                    CONF_MQTT_PASSWORD,
+                    default=options.get(
+                        CONF_MQTT_PASSWORD,
+                        DEFAULT_MQTT_PASSWORD,
+                    ),
+                ): str,
                 vol.Optional(
                     CONF_MQTT_CA_CERT,
                     default=options.get(CONF_MQTT_CA_CERT, ""),

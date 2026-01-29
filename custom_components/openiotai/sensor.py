@@ -20,6 +20,8 @@ from .const import (
     CONF_MQTT_TOPIC,
     CONF_MQTT_TLS,
     CONF_MQTT_CA_CERT,
+    CONF_MQTT_USERNAME,
+    CONF_MQTT_PASSWORD,
     DEFAULT_MQTT_PORT,
     DEFAULT_MQTT_TOPIC,
     DEFAULT_MQTT_TLS,
@@ -77,6 +79,8 @@ async def async_setup_entry(
     mqtt_topic: str = options.get(CONF_MQTT_TOPIC, DEFAULT_MQTT_TOPIC)
     mqtt_tls: bool = options.get(CONF_MQTT_TLS, DEFAULT_MQTT_TLS)
     mqtt_ca_cert: Optional[str] = options.get(CONF_MQTT_CA_CERT)
+    mqtt_username: Optional[str] = options.get(CONF_MQTT_USERNAME)
+    mqtt_password: Optional[str] = options.get(CONF_MQTT_PASSWORD)
 
     if not mqtt_broker:
         _LOGGER.warning(
@@ -88,11 +92,12 @@ async def async_setup_entry(
 
     _LOGGER.info(
         "OpenIOTAI MQTT configuration resolved "
-        "(broker=%s:%s, topic=%s, tls=%s, ca_cert=%s, entry_id=%s)",
+        "(broker=%s:%s, topic=%s, tls=%s, auth=%s, ca_cert=%s, entry_id=%s)",
         mqtt_broker,
         mqtt_port,
         mqtt_topic,
         mqtt_tls,
+        "enabled" if mqtt_username else "disabled",
         mqtt_ca_cert or "system default",
         entry_id,
     )
@@ -106,6 +111,8 @@ async def async_setup_entry(
         topic=mqtt_topic,
         use_tls=mqtt_tls,
         ca_cert=mqtt_ca_cert,
+        username=mqtt_username,
+        password=mqtt_password,
         client_id=f"openiotai-ha-{entry_id}",
     )
 

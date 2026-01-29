@@ -23,6 +23,8 @@ class OpenIOTAIMQTTExporter:
         topic: str,
         use_tls: bool,
         ca_cert: Optional[str],
+        username: Optional[str],
+        password: Optional[str],
         client_id: str,
     ) -> None:
         self._broker = broker
@@ -30,20 +32,38 @@ class OpenIOTAIMQTTExporter:
         self._topic = topic
         self._use_tls = use_tls
         self._ca_cert = ca_cert
+        self._username = username
+        self._password = password
         self._client_id = client_id
 
         _LOGGER.info(
             "Initializing MQTT exporter "
-            "(broker=%s:%s, topic=%s, tls=%s, client_id=%s)",
+            "(broker=%s:%s, topic=%s, tls=%s, auth=%s, client_id=%s)",
             broker,
             port,
             topic,
             use_tls,
+            "enabled" if username else "disabled",
             client_id,
         )
 
         self._client = mqtt.Client(client_id=client_id)
 
+        # ------------------------------------------------------------------
+        # Authentication (username/password)
+        # ------------------------------------------------------------------
+        if self._username:
+            self._client.username_pw_set(self._username, self._password)
+            _LOGGER.info(
+                "MQTT authentication enabled (username=%s)",
+                self._username,
+            )
+        else:
+            _LOGGER.info("MQTT authentication not configured")
+
+        # ------------------------------------------------------------------
+        # TLS configuration
+        # ------------------------------------------------------------------
         if self._use_tls:
             self._configure_tls()
         else:
