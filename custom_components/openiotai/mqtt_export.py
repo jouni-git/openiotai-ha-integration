@@ -36,145 +36,78 @@ class OpenIOTAIMQTTExporter:
         self._password = password
         self._client_id = client_id
 
+        self._client = mqtt.Client(client_id=client_id)
+        self._connected = False
+
+        if self._username:
+            self._client.username_pw_set(self._username, self._password)
+
+        if self._use_tls:
+            self._configure_tls()
+
         _LOGGER.info(
-            "Initializing MQTT exporter "
-            "(broker=%s:%s, topic=%s, tls=%s, auth=%s, client_id=%s)",
+            "MQTT exporter initialized (broker=%s:%s, topic=%s, tls=%s, auth=%s)",
             broker,
             port,
             topic,
             use_tls,
             "enabled" if username else "disabled",
-            client_id,
         )
 
-        self._client = mqtt.Client(client_id=client_id)
-
-        # ------------------------------------------------------------------
-        # Authentication (username/password)
-        # ------------------------------------------------------------------
-        if self._username:
-            self._client.username_pw_set(self._username, self._password)
-            _LOGGER.info(
-                "MQTT authentication enabled (username=%s)",
-                self._username,
-            )
-        else:
-            _LOGGER.info("MQTT authentication not configured")
-
-        # ------------------------------------------------------------------
-        # TLS configuration
-        # ------------------------------------------------------------------
-        if self._use_tls:
-            self._configure_tls()
-        else:
-            _LOGGER.info("MQTT TLS disabled, using plaintext connection")
-
     # ------------------------------------------------------------------
-    # TLS configuration
+    # TLS
     # ------------------------------------------------------------------
     def _configure_tls(self) -> None:
-        """Configure TLS for the MQTT client."""
-        _LOGGER.info(
-            "Enabling MQTT TLS (ca_cert=%s)",
-            self._ca_cert if self._ca_cert else "system default",
+        context = ssl.create_default_context(
+            cafile=self._ca_cert if self._ca_cert else None
         )
-
-        try:
-            context = ssl.create_default_context(
-                cafile=self._ca_cert if self._ca_cert else None
-            )
-
-            # Explicitly require certificate validation
-            context.check_hostname = True
-            context.verify_mode = ssl.CERT_REQUIRED
-
-            self._client.tls_set_context(context)
-
-            if self._port == 1883:
-                _LOGGER.warning(
-                    "MQTT TLS enabled but port is 1883 "
-                    "(this is unusual and likely misconfigured)"
-                )
-
-        except Exception:
-            _LOGGER.exception("Failed to configure MQTT TLS")
-            raise
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        self._client.tls_set_context(context)
 
     # ------------------------------------------------------------------
-    # Connection handling
+    # Connection handling (LAZY)
     # ------------------------------------------------------------------
-    def connect(self) -> None:
-        """Connect to the MQTT broker."""
+    def _ensure_connected(self) -> None:
+        if self._connected:
+            return
+
         _LOGGER.info(
             "Connecting to MQTT broker (broker=%s:%s)",
             self._broker,
             self._port,
         )
 
-        try:
-            result = self._client.connect(self._broker, self._port)
+        result = self._client.connect(self._broker, self._port, keepalive=30)
 
-            if result != mqtt.MQTT_ERR_SUCCESS:
-                raise RuntimeError(
-                    f"MQTT connect failed with result code {result}"
-                )
+        if result != mqtt.MQTT_ERR_SUCCESS:
+            raise RuntimeError(f"MQTT connect failed (rc={result})")
 
-            _LOGGER.info("MQTT connection established")
-
-        except Exception:
-            _LOGGER.exception("MQTT connection failed")
-            raise
-
-    def disconnect(self) -> None:
-        """Disconnect from the MQTT broker."""
-        _LOGGER.info("Disconnecting from MQTT broker")
-
-        try:
-            self._client.disconnect()
-            _LOGGER.info("MQTT disconnected successfully")
-        except Exception:
-            _LOGGER.exception("MQTT disconnect failed")
+        self._connected = True
+        _LOGGER.info("MQTT connection established")
 
     # ------------------------------------------------------------------
     # Publishing
     # ------------------------------------------------------------------
     def publish_snapshot(self, snapshot: Dict[str, Any]) -> None:
         """Publish a snapshot to MQTT."""
-        entity_count = len(snapshot)
-
-        _LOGGER.info(
-            "Publishing snapshot to MQTT "
-            "(entities=%d, topic=%s)",
-            entity_count,
-            self._topic,
-        )
-
         try:
+            self._ensure_connected()
+
             payload = json.dumps(snapshot)
-        except Exception:
-            _LOGGER.exception("Failed to serialize snapshot to JSON")
-            raise
-
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug(
-                "MQTT payload size=%d bytes",
-                len(payload),
-            )
-            _LOGGER.debug(
-                "MQTT snapshot sample entity_ids=%s",
-                list(snapshot.keys())[:3],
-            )
-
-        try:
             info = self._client.publish(self._topic, payload)
 
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
-                raise RuntimeError(
-                    f"MQTT publish failed with rc={info.rc}"
-                )
+                raise RuntimeError(f"MQTT publish failed (rc={info.rc})")
 
-            _LOGGER.debug("MQTT publish successful")
+            _LOGGER.debug(
+                "MQTT publish successful (entities=%d, topic=%s)",
+                len(snapshot),
+                self._topic,
+            )
 
         except Exception:
+            # Connection is no longer valid → force reconnect next time
+            self._connected = False
             _LOGGER.exception("MQTT publish failed")
             raise

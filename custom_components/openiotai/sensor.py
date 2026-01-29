@@ -1,7 +1,7 @@
 """Sensor platform for OpenIOTAI integration.
 
-This platform does not create Home Assistant sensor entities.
-It initializes the polling coordinator and exports snapshots via MQTT.
+Initializes polling coordinator and exports snapshots via MQTT.
+No Home Assistant sensor entities are created.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the OpenIOTAI sensor platform."""
+    """Set up OpenIOTAI sensor platform."""
     entry_id = entry.entry_id
 
     _LOGGER.info(
@@ -46,31 +46,16 @@ async def async_setup_entry(
     )
 
     # ------------------------------------------------------------------
-    # 1. Initialize polling coordinator
+    # 1. Polling coordinator (SAFE in setup)
     # ------------------------------------------------------------------
     coordinator = OpenIOTAIDataCoordinator(hass)
-
-    _LOGGER.info(
-        "Starting initial OpenIOTAI polling refresh (entry_id=%s)",
-        entry_id,
-    )
-
     await coordinator.async_config_entry_first_refresh()
-
-    entity_count = len(coordinator.data or {})
-
-    _LOGGER.info(
-        "Initial OpenIOTAI polling completed "
-        "(entities=%d, entry_id=%s)",
-        entity_count,
-        entry_id,
-    )
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry_id] = coordinator
 
     # ------------------------------------------------------------------
-    # 2. Resolve MQTT configuration from options
+    # 2. Resolve MQTT configuration
     # ------------------------------------------------------------------
     options = entry.options
 
@@ -90,21 +75,6 @@ async def async_setup_entry(
         )
         return
 
-    _LOGGER.info(
-        "OpenIOTAI MQTT configuration resolved "
-        "(broker=%s:%s, topic=%s, tls=%s, auth=%s, ca_cert=%s, entry_id=%s)",
-        mqtt_broker,
-        mqtt_port,
-        mqtt_topic,
-        mqtt_tls,
-        "enabled" if mqtt_username else "disabled",
-        mqtt_ca_cert or "system default",
-        entry_id,
-    )
-
-    # ------------------------------------------------------------------
-    # 3. Initialize MQTT exporter
-    # ------------------------------------------------------------------
     exporter = OpenIOTAIMQTTExporter(
         broker=mqtt_broker,
         port=mqtt_port,
@@ -116,23 +86,13 @@ async def async_setup_entry(
         client_id=f"openiotai-ha-{entry_id}",
     )
 
-    try:
-        exporter.connect()
-    except Exception:
-        _LOGGER.exception(
-            "MQTT connection failed, OpenIOTAI export disabled "
-            "(entry_id=%s)",
-            entry_id,
-        )
-        return
-
     _LOGGER.info(
-        "OpenIOTAI MQTT connection established (entry_id=%s)",
+        "OpenIOTAI MQTT export initialized (lazy connect, entry_id=%s)",
         entry_id,
     )
 
     # ------------------------------------------------------------------
-    # 4. Export snapshot after each polling update
+    # 3. Export snapshot after each polling update (RUNTIME)
     # ------------------------------------------------------------------
     async def _export_after_update() -> None:
         snapshot = coordinator.data or {}
@@ -152,12 +112,9 @@ async def async_setup_entry(
                 entry_id,
             )
 
-    # Register listener for coordinator updates
     coordinator.async_add_listener(
         lambda: hass.async_create_task(_export_after_update())
     )
 
     _LOGGER.info(
-        "OpenIOTAI MQTT export pipeline activated (entry_id=%s)",
-        entry_id,
-    )
+        "OpenIOTAI MQTT export pipe
