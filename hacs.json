@@ -1,0 +1,6 @@
+{
+  "name": "OpenIOTAI Polling-Based Data Export",
+  "content_in_root": false,
+  "domain": "openiotai",
+  "iot_class": "local_polling"
+}
