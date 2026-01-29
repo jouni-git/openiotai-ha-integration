@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+
+# --- Home Assistant runtime (local dev only) ---
+.storage/
+
+# --- VS Code ---
+.vscode/
