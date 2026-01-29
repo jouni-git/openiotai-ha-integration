@@ -73,14 +73,23 @@ class OpenIOTAIMQTTExporter:
             self._ca_cert or "system default",
         )
 
-        context = ssl.create_default_context(
-            cafile=self._ca_cert if self._ca_cert else None
+        # Run blocking TLS setup outside event loop
+        context = asyncio.get_running_loop().run_until_complete(
+            asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: ssl.create_default_context(
+                    cafile=self._ca_cert if self._ca_cert else None
+                ),
+            )
         )
+
         context.check_hostname = True
         context.verify_mode = ssl.CERT_REQUIRED
 
         self._client.tls_set_context(context)
         self._tls_configured = True
+
+
 
     def _ensure_connected(self) -> None:
         if self._connected:
