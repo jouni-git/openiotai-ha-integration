@@ -23,7 +23,6 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     """Coordinator that polls current Home Assistant state snapshots."""
 
     def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize the coordinator."""
         super().__init__(
             hass=hass,
             logger=_LOGGER,
@@ -32,17 +31,11 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         )
 
         _LOGGER.info(
-            "Initializing OpenIOTAI DataUpdateCoordinator "
-            "(interval=%s)",
+            "Initializing OpenIOTAI DataUpdateCoordinator (interval=%s)",
             DEFAULT_POLL_INTERVAL,
         )
 
     async def _async_update_data(self) -> Dict[str, Any]:
-        """
-        Fetch the latest data from Home Assistant.
-
-        Returns a deterministic snapshot of current entity states.
-        """
         try:
             data: Dict[str, Any] = {}
 
@@ -62,12 +55,6 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 "OpenIOTAI polling completed: entities=%d",
                 len(data),
             )
-
-            if _LOGGER.isEnabledFor(logging.DEBUG):
-                _LOGGER.debug(
-                    "OpenIOTAI snapshot sample entity_ids=%s",
-                    list(data.keys())[:3],
-                )
 
             return data
 
