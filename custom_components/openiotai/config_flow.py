@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import socket
+import ssl
 import voluptuous as vol
+import paho.mqtt.client as mqtt
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -34,12 +38,7 @@ class OpenIOTAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict | None = None
     ) -> FlowResult:
-        """
-        Initial setup step.
-
-        No mandatory configuration is required at creation time.
-        MQTT configuration is handled via Options Flow.
-        """
+        """Initial setup step."""
         if user_input is not None:
             return self.async_create_entry(
                 title="OpenIOTAI",
@@ -68,11 +67,40 @@ class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict | None = None
     ) -> FlowResult:
         """Manage the OpenIOTAI options."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
-            return self.async_create_entry(
-                title="",
-                data=user_input,
-            )
+            # --------------------------------------------------------------
+            # 1. Soft validation
+            # --------------------------------------------------------------
+            broker = user_input.get(CONF_MQTT_BROKER)
+            port = user_input.get(CONF_MQTT_PORT)
+
+            if not broker:
+                errors["base"] = "missing_broker"
+            elif not isinstance(port, int) or port <= 0:
+                errors["base"] = "invalid_port"
+
+            # --------------------------------------------------------------
+            # 2. MQTT connection test (blocking but short & safe)
+            # --------------------------------------------------------------
+            if not errors:
+                try:
+                    await self._async_test_mqtt_connection(user_input)
+                except CannotConnect:
+                    errors["base"] = "cannot_connect"
+                except InvalidAuth:
+                    errors["base"] = "invalid_auth"
+                except TlsError:
+                    errors["base"] = "tls_error"
+                except Exception:
+                    errors["base"] = "unknown"
+
+            if not errors:
+                return self.async_create_entry(
+                    title="",
+                    data=user_input,
+                )
 
         options = self._entry.options
 
@@ -130,4 +158,65 @@ class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=schema,
+            errors=errors,
         )
+
+    # ------------------------------------------------------------------
+    # MQTT connection test
+    # ------------------------------------------------------------------
+    async def _async_test_mqtt_connection(self, cfg: dict) -> None:
+        """Test MQTT connection with TLS and auth."""
+        broker = cfg[CONF_MQTT_BROKER]
+        port = cfg[CONF_MQTT_PORT]
+        use_tls = cfg[CONF_MQTT_TLS]
+        ca_cert = cfg.get(CONF_MQTT_CA_CERT)
+        username = cfg.get(CONF_MQTT_USERNAME)
+        password = cfg.get(CONF_MQTT_PASSWORD)
+
+        def _blocking_test() -> None:
+            client = mqtt.Client(client_id="openiotai-config-test")
+
+            if username:
+                client.username_pw_set(username, password)
+
+            if use_tls:
+                try:
+                    context = ssl.create_default_context(
+                        cafile=ca_cert if ca_cert else None
+                    )
+                    client.tls_set_context(context)
+                except Exception as exc:
+                    raise TlsError from exc
+
+            try:
+                result = client.connect(broker, port, keepalive=5)
+                if result != mqtt.MQTT_ERR_SUCCESS:
+                    raise CannotConnect
+                client.disconnect()
+            except ssl.SSLError as exc:
+                raise TlsError from exc
+            except socket.gaierror as exc:
+                raise CannotConnect from exc
+            except ConnectionRefusedError as exc:
+                raise CannotConnect from exc
+            except mqtt.MQTTException as exc:
+                raise InvalidAuth from exc
+
+        await asyncio.get_running_loop().run_in_executor(
+            None, _blocking_test
+        )
+
+
+# ----------------------------------------------------------------------
+# Custom exceptions for HA-style error mapping
+# ----------------------------------------------------------------------
+class CannotConnect(Exception):
+    """MQTT broker not reachable."""
+
+
+class InvalidAuth(Exception):
+    """Invalid MQTT authentication."""
+
+
+class TlsError(Exception):
+    """TLS configuration or handshake failed."""
