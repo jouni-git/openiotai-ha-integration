@@ -117,4 +117,6 @@ async def async_setup_entry(
     )
 
     _LOGGER.info(
-        "OpenIOTAI MQTT export pipe
+        "OpenIOTAI MQTT export pipeline activated (entry_id=%s)",
+        entry_id,
+    )
