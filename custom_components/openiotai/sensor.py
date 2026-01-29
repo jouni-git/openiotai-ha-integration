@@ -105,7 +105,7 @@ async def async_setup_entry(
         )
 
         try:
-            exporter.publish_snapshot(snapshot)
+            await exporter.publish_snapshot(snapshot)
         except Exception:
             _LOGGER.exception(
                 "OpenIOTAI MQTT export failed (entry_id=%s)",
