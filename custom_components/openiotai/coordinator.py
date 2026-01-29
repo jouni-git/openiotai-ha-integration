@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import logging
 from datetime import timedelta
+import logging
 from typing import Any, Dict
 
 from homeassistant.core import HomeAssistant
@@ -12,7 +11,6 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
-from homeassistant.util.json import JSONEncoder
 
 from .const import DOMAIN
 
@@ -33,26 +31,31 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             update_interval=DEFAULT_POLL_INTERVAL,
         )
 
+        _LOGGER.info(
+            "Initializing OpenIOTAI DataUpdateCoordinator "
+            "(interval=%s)",
+            DEFAULT_POLL_INTERVAL,
+        )
+
     async def _async_update_data(self) -> Dict[str, Any]:
         """
         Fetch the latest data from Home Assistant.
 
-        Returns a JSON-serializable snapshot of current entity states.
+        Returns a deterministic snapshot of current entity states.
         """
         try:
-            _LOGGER.debug("Starting OpenIOTAI polling cycle")
-
             data: Dict[str, Any] = {}
 
             for state in self.hass.states.async_all():
-                # Normalize attributes to JSON-compatible types
-                attributes = json.loads(
-                    json.dumps(state.attributes, cls=JSONEncoder)
-                )
-
                 data[state.entity_id] = {
                     "state": state.state,
-                    "attributes": attributes,
+                    "attributes": dict(state.attributes),
+                    "last_changed": state.last_changed.isoformat()
+                    if state.last_changed
+                    else None,
+                    "last_updated": state.last_updated.isoformat()
+                    if state.last_updated
+                    else None,
                 }
 
             _LOGGER.debug(
@@ -62,7 +65,7 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 _LOGGER.debug(
-                    "OpenIOTAI snapshot sample entity_ids: %s",
+                    "OpenIOTAI snapshot sample entity_ids=%s",
                     list(data.keys())[:3],
                 )
 
@@ -70,4 +73,4 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
         except Exception as err:
             _LOGGER.exception("OpenIOTAI polling failed")
-            raise UpdateFailed(f"Polling failed: {err}") from err
+            raise UpdateFailed(str(err)) from err
