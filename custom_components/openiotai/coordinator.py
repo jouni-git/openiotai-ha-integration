@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+import json
 import logging
-import time
+from datetime import timedelta
 from typing import Any, Dict
 
 from homeassistant.core import HomeAssistant
@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
+from homeassistant.util.json import JSONEncoder
 
 from .const import DOMAIN
 
@@ -25,11 +26,6 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the coordinator."""
-        _LOGGER.info(
-            "Initializing OpenIOTAI DataUpdateCoordinator (interval=%s)",
-            DEFAULT_POLL_INTERVAL,
-        )
-
         super().__init__(
             hass=hass,
             logger=_LOGGER,
@@ -41,36 +37,33 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
         """
         Fetch the latest data from Home Assistant.
 
-        This method intentionally avoids the event bus and returns
-        a deterministic snapshot of current entity states.
+        Returns a JSON-serializable snapshot of current entity states.
         """
-        start_ts = time.monotonic()
-
-        _LOGGER.debug("Starting OpenIOTAI polling cycle")
-
         try:
+            _LOGGER.debug("Starting OpenIOTAI polling cycle")
+
             data: Dict[str, Any] = {}
 
             for state in self.hass.states.async_all():
+                # Normalize attributes to JSON-compatible types
+                attributes = json.loads(
+                    json.dumps(state.attributes, cls=JSONEncoder)
+                )
+
                 data[state.entity_id] = {
                     "state": state.state,
-                    "attributes": state.attributes,
+                    "attributes": attributes,
                 }
 
-            duration = time.monotonic() - start_ts
-
             _LOGGER.debug(
-                "OpenIOTAI polling completed: entities=%d, duration=%.3fs",
+                "OpenIOTAI polling completed: entities=%d",
                 len(data),
-                duration,
             )
 
-            # Optional, but VERY useful during development
-            if _LOGGER.isEnabledFor(logging.DEBUG) and data:
-                sample_keys = list(data.keys())[:3]
+            if _LOGGER.isEnabledFor(logging.DEBUG):
                 _LOGGER.debug(
                     "OpenIOTAI snapshot sample entity_ids: %s",
-                    sample_keys,
+                    list(data.keys())[:3],
                 )
 
             return data
