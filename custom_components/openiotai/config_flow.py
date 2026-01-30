@@ -33,7 +33,7 @@ from .const import (
 class OpenIOTAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for OpenIOTAI."""
 
-    VERSION = 2  # 🔑 Current config version
+    VERSION = 1  # 🔒 Pidetään vakiona → ei migraatioita
 
     async def async_step_user(
         self, user_input: dict | None = None
@@ -55,19 +55,6 @@ class OpenIOTAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
         """Return the options flow handler."""
         return OpenIOTAIOptionsFlow(config_entry)
-
-
-async def async_migrate_entry(
-    hass, entry: config_entries.ConfigEntry
-) -> bool:
-    """Migrate old config entries to the current version.
-
-    Currently this integration has no schema changes between versions,
-    so we only need to bump the stored version number.
-    """
-    if entry.version < 2:
-        entry.version = 2
-    return True
 
 
 class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
