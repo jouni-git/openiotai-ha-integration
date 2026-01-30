@@ -1,10 +1,13 @@
 # custom_components/openiotai/binary_sensor.py
 from __future__ import annotations
 
+from datetime import timedelta
+
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DOMAIN
 
@@ -17,7 +20,6 @@ async def async_setup_entry(
     exporter = hass.data[DOMAIN].get(entry.entry_id)
 
     if exporter is None:
-        # Should never happen, but be defensive
         return
 
     async_add_entities(
@@ -39,36 +41,30 @@ class OpenIOTAIConnectionSensor(BinarySensorEntity):
         self.entry = entry
         self.exporter = exporter
 
-        # Stable entity_id (no migrations, no randomness)
         self._attr_unique_id = f"{entry.entry_id}_mqtt_connected"
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Attach entity to the OpenIOTAI integration device."""
         return DeviceInfo(
             identifiers={(DOMAIN, self.entry.entry_id)},
             name="OpenIOTAI",
             manufacturer="OpenIOTAI",
-            configuration_url="https://github.com/openiotai",
+            configuration_url="https://github.com/jouni-git/openiotai-ha-integration",
         )
 
     @property
     def is_on(self) -> bool:
-        """Return True if MQTT is currently connected."""
         return bool(self.exporter.connected)
 
     @callback
-    def _handle_state_change(self) -> None:
-        """Write updated state to Home Assistant."""
+    def _handle_state_change(self, _now=None) -> None:
         self.async_write_ha_state()
 
     async def async_added_to_hass(self) -> None:
-        """Register callbacks when entity is added to HA."""
-        # Exporter updates connected/last_error internally;
-        # we just poll state lightly via dispatcher-style callback.
         self.async_on_remove(
-            self.hass.helpers.event.async_track_time_interval(
-                lambda _: self._handle_state_change(),
-                5,
+            async_track_time_interval(
+                self.hass,
+                self._handle_state_change,
+                timedelta(seconds=5),
             )
         )
