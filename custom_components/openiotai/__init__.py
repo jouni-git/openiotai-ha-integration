@@ -8,7 +8,16 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    CONF_MQTT_BROKER,
+    CONF_MQTT_PORT,
+    CONF_MQTT_TOPIC,
+    CONF_MQTT_TLS,
+    CONF_MQTT_CA_CERT,
+    CONF_MQTT_USERNAME,
+    CONF_MQTT_PASSWORD,
+)
 from .mqtt_export import OpenIOTAIMQTTExporter
 
 _LOGGER = logging.getLogger(__name__)
@@ -18,6 +27,25 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the OpenIOTAI integration."""
     _LOGGER.info("Initializing OpenIOTAI integration (async_setup)")
     hass.data.setdefault(DOMAIN, {})
+    return True
+
+
+async def async_migrate_entry(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> bool:
+    """Migrate old config entries to the current version.
+
+    Currently no schema changes are required; we only bump the version.
+    """
+    _LOGGER.info(
+        "Migrating OpenIOTAI config entry (entry_id=%s, version=%s → 2)",
+        entry.entry_id,
+        entry.version,
+    )
+
+    if entry.version < 2:
+        entry.version = 2
+
     return True
 
 
@@ -40,20 +68,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.entry_id,
     )
 
-    # Prefer options over data (options-flow editable)
     cfg = entry.options or entry.data
 
-    # --- MQTT SETUP-TIME VALIDATION ---
-    exporter = OpenIOTAIMQTTExporter(
-        broker=cfg["broker"],
-        port=cfg["port"],
-        topic=cfg["topic"],
-        use_tls=cfg.get("tls", False),
-        ca_cert=cfg.get("ca_cert"),
-        username=cfg.get("username"),
-        password=cfg.get("password"),
-        client_id=f"openiotai-{entry.entry_id}",
-    )
+    # ------------------------------------------------------------------
+    # MQTT SETUP-TIME VALIDATION
+    # ------------------------------------------------------------------
+    try:
+        exporter = OpenIOTAIMQTTExporter(
+            broker=cfg[CONF_MQTT_BROKER],
+            port=cfg[CONF_MQTT_PORT],
+            topic=cfg[CONF_MQTT_TOPIC],
+            use_tls=cfg.get(CONF_MQTT_TLS, False),
+            ca_cert=cfg.get(CONF_MQTT_CA_CERT),
+            username=cfg.get(CONF_MQTT_USERNAME),
+            password=cfg.get(CONF_MQTT_PASSWORD),
+            client_id=f"openiotai-{entry.entry_id}",
+        )
+    except KeyError as e:
+        _LOGGER.error(
+            "Missing required MQTT configuration key %s (entry_id=%s)",
+            e,
+            entry.entry_id,
+        )
+        raise ConfigEntryNotReady("Incomplete MQTT configuration") from e
 
     try:
         await exporter.async_test_connection()
@@ -75,7 +112,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.entry_id,
     )
 
-    # 🔑 Register options update listener
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
@@ -120,8 +156,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unloaded:
         _LOGGER.info(
-            "OpenIOTAI config entry unloaded successfully (entry_id=%s)",
-            entry.entry_id,
-        )
-
-    return unloaded
+            "OpenIOTAI config
