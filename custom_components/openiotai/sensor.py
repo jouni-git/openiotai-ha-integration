@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -24,6 +24,31 @@ from .coordinator import OpenIOTAIDataCoordinator
 from .mqtt_export import OpenIOTAIMQTTExporter, CannotConnect
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------
+# Snapshot delta helper
+# ---------------------------------------------------------------------
+class SnapshotDelta:
+    """Computes delta between successive snapshots."""
+
+    def __init__(self) -> None:
+        self._last: Dict[str, Any] | None = None
+
+    def compute(self, current: Dict[str, Any]) -> Dict[str, Any]:
+        # First publish → full snapshot
+        if self._last is None:
+            self._last = current
+            return current
+
+        delta: Dict[str, Any] = {}
+
+        for key, value in current.items():
+            if self._last.get(key) != value:
+                delta[key] = value
+
+        self._last = current
+        return delta
 
 
 async def async_setup_entry(
@@ -65,7 +90,7 @@ async def async_setup_entry(
     # ------------------------------------------------------------------
     coordinator = OpenIOTAIDataCoordinator(hass)
 
-    # ⚠️ TÄRKEÄ: EI konstruktoriparametrina
+    # ⚠️ Important: set interval AFTER construction
     coordinator.update_interval = interval
 
     await coordinator.async_config_entry_first_refresh()
@@ -83,16 +108,41 @@ async def async_setup_entry(
         return
 
     # ------------------------------------------------------------------
-    # 4. Export snapshot after each polling update
+    # 4. Delta computation state
+    # ------------------------------------------------------------------
+    delta_builder = SnapshotDelta()
+    first_publish = True
+
+    # ------------------------------------------------------------------
+    # 5. Export after each polling update
     # ------------------------------------------------------------------
     async def _export_after_update() -> None:
+        nonlocal first_publish
+
         snapshot = coordinator.data or {}
 
+        # Compute delta
+        delta = delta_builder.compute(snapshot)
+
+        if not delta:
+            _LOGGER.debug(
+                "OpenIOTAI delta empty → skip publish (entry_id=%s)",
+                entry_id,
+            )
+            return
+
+        payload = {
+            "_type": "full" if first_publish else "delta",
+            "_ts": datetime.utcnow().isoformat(),
+            "data": delta,
+        }
+
         try:
-            await exporter.publish_snapshot(snapshot)
+            await exporter.publish_snapshot(payload)
+            first_publish = False
 
         except CannotConnect:
-            # Expected, transient condition
+            # Expected transient condition
             _LOGGER.debug(
                 "OpenIOTAI MQTT export skipped (connect in progress, entry_id=%s)",
                 entry_id,
@@ -114,7 +164,7 @@ async def async_setup_entry(
     )
 
     _LOGGER.info(
-        "OpenIOTAI MQTT export pipeline activated "
+        "OpenIOTAI MQTT delta export pipeline activated "
         "(interval=%ss, entry_id=%s)",
         int(interval.total_seconds()),
         entry_id,
