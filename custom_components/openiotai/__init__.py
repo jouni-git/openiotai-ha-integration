@@ -22,9 +22,11 @@ from .mqtt_export import OpenIOTAIMQTTExporter
 
 _LOGGER = logging.getLogger(__name__)
 
+PLATFORMS: tuple[str, ...] = ("sensor", "binary_sensor")
+
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the OpenIOTAI integration."""
+    """Set up OpenIOTAI (YAML not used)."""
     hass.data.setdefault(DOMAIN, {})
     return True
 
@@ -55,24 +57,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             client_id=f"openiotai-{entry.entry_id}",
         )
     except KeyError as exc:
-        raise ConfigEntryNotReady("Incomplete MQTT configuration") from exc
+        raise ConfigEntryNotReady(
+            "Incomplete MQTT configuration"
+        ) from exc
 
     # ------------------------------------------------------------------
-    # Store exporter for sensor / diagnostics / binary_sensor
+    # Store exporter for runtime / diagnostics
     # ------------------------------------------------------------------
     hass.data[DOMAIN][entry.entry_id] = exporter
 
     # ------------------------------------------------------------------
-    # Start MQTT runtime (background, non-blocking)
+    # Start MQTT runtime (non-blocking)
     # ------------------------------------------------------------------
     try:
         hass.async_create_task(exporter.async_start())
         _LOGGER.debug(
-            "OpenIOTAI MQTT runtime task scheduled (entry_id=%s)",
+            "OpenIOTAI MQTT runtime scheduled (entry_id=%s)",
             entry.entry_id,
         )
     except Exception as err:
-        # This should never fail, but must not break setup
+        # Must never block integration setup
         _LOGGER.error(
             "Failed to start OpenIOTAI MQTT runtime (entry_id=%s): %s",
             entry.entry_id,
@@ -87,31 +91,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # ------------------------------------------------------------------
-    # Forward platforms
+    # Forward platforms (SETUP)
     # ------------------------------------------------------------------
     await hass.config_entries.async_forward_entry_setups(
-        entry, ["sensor", "binary_sensor"]
+        entry,
+        PLATFORMS,
     )
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload OpenIOTAI."""
-    unload_ok = await hass.config_entries.async_forward_entry_unload(
-        entry, ["sensor", "binary_sensor"]
-    )
+    """Unload OpenIOTAI integration."""
+    unload_ok = True
 
-    if unload_ok:
-        exporter = hass.data[DOMAIN].pop(entry.entry_id, None)
-        if exporter:
-            try:
-                await exporter.async_stop()
-            except Exception:
-                # Never block unload
-                _LOGGER.debug(
-                    "OpenIOTAI MQTT runtime stop failed (ignored, entry_id=%s)",
-                    entry.entry_id,
-                )
+    # ------------------------------------------------------------------
+    # Unload platforms (UNLOAD)
+    # ------------------------------------------------------------------
+    for platform in PLATFORMS:
+        unload_ok &= await hass.config_entries.async_forward_entry_unload(
+            entry, platform
+        )
+
+    # ------------------------------------------------------------------
+    # Stop MQTT runtime
+    # ------------------------------------------------------------------
+    exporter = hass.data[DOMAIN].pop(entry.entry_id, None)
+    if exporter:
+        try:
+            await exporter.async_stop()
+        except Exception:
+            # Never block unload
+            _LOGGER.debug(
+                "OpenIOTAI MQTT runtime stop failed (ignored, entry_id=%s)",
+                entry.entry_id,
+            )
 
     return unload_ok
