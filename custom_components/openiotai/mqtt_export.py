@@ -254,7 +254,10 @@ class OpenIOTAIMQTTExporter:
     # Publishing
     # ------------------------------------------------------------------
     async def publish_snapshot(self, snapshot: Dict[str, Any]) -> None:
-        await self._ensure_connected()
+        #await self._ensure_connected()
+        if not self.connected:
+            return
+
         assert self._client is not None
 
         payload = json.dumps(
