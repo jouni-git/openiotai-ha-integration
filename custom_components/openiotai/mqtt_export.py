@@ -21,6 +21,9 @@ RECONNECT_INITIAL_SEC = 2
 RECONNECT_MAX_SEC = 60
 
 
+# ---------------------------------------------------------------------
+# Exceptions (used by config / options flow)
+# ---------------------------------------------------------------------
 class CannotConnect(Exception):
     """Raised when MQTT broker cannot be reached / connection fails."""
 
@@ -33,6 +36,9 @@ class TlsError(Exception):
     """Raised when TLS handshake / certificate validation fails."""
 
 
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
 def _json_safe(obj: Any) -> Any:
     if obj is None:
         return None
@@ -52,6 +58,9 @@ def _json_safe(obj: Any) -> Any:
     return str(obj)
 
 
+# ---------------------------------------------------------------------
+# Exporter
+# ---------------------------------------------------------------------
 class OpenIOTAIMQTTExporter:
     """Exports OpenIOTAI snapshots to MQTT (TLS supported)."""
 
@@ -70,6 +79,7 @@ class OpenIOTAIMQTTExporter:
         connect_timeout: int = DEFAULT_CONNECT_TIMEOUT_SEC,
         publish_timeout: int = DEFAULT_PUBLISH_TIMEOUT_SEC,
     ) -> None:
+        # Config
         self._broker = broker
         self._port = port
         self._topic = topic
@@ -83,16 +93,22 @@ class OpenIOTAIMQTTExporter:
         self._connect_timeout = connect_timeout
         self._publish_timeout = publish_timeout
 
-        self.connected = False
+        # Runtime state (diagnostics)
+        self.connected: bool = False
         self.last_error: Optional[str] = None
         self.last_connect_attempt: Optional[str] = None
 
+        # Internal state
         self._client: Optional[mqtt.Client] = None
         self._tls_configured = False
         self._lock = asyncio.Lock()
 
         self._conn_event: Optional[asyncio.Event] = None
         self._conn_rc: Optional[int] = None
+
+        self._running: bool = False
+        self._stop_event = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
 
         _LOGGER.info(
             "MQTT exporter initialized "
@@ -103,6 +119,61 @@ class OpenIOTAIMQTTExporter:
             topic,
             client_id,
         )
+
+    # ------------------------------------------------------------------
+    # Runtime lifecycle
+    # ------------------------------------------------------------------
+    async def async_start(self) -> None:
+        """Start background MQTT connection management."""
+        if self._running:
+            return
+
+        self._running = True
+        self._stop_event.clear()
+        self._task = asyncio.create_task(
+            self._run(), name="openiotai_mqtt_runtime"
+        )
+        _LOGGER.debug("OpenIOTAI MQTT runtime started")
+
+    async def async_stop(self) -> None:
+        """Stop runtime and disconnect."""
+        if not self._running:
+            return
+
+        self._running = False
+        self._stop_event.set()
+
+        if self._task:
+            try:
+                await self._task
+            except Exception:
+                pass
+
+        await self._disconnect()
+        _LOGGER.debug("OpenIOTAI MQTT runtime stopped")
+
+    async def _run(self) -> None:
+        """Background loop that maintains MQTT connection."""
+        backoff = RECONNECT_INITIAL_SEC
+
+        while not self._stop_event.is_set():
+            try:
+                await self._ensure_connected()
+                backoff = RECONNECT_INITIAL_SEC
+                await self._sleep_or_stop(5)
+            except Exception as err:
+                self.connected = False
+                self.last_error = str(err)
+                _LOGGER.debug("MQTT connect attempt failed: %s", err)
+                await self._disconnect()
+                await self._sleep_or_stop(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_SEC)
+
+    async def _sleep_or_stop(self, seconds: int) -> None:
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
 
     # ------------------------------------------------------------------
     # Connection helpers
@@ -137,8 +208,6 @@ class OpenIOTAIMQTTExporter:
 
         def _on_disconnect(_client, _userdata, rc, _properties=None):
             self.connected = False
-            if rc != 0:
-                self.last_error = f"disconnected rc={rc}"
             _LOGGER.info("MQTT disconnected (rc=%s)", rc)
 
         client.on_connect = _on_connect
@@ -163,13 +232,10 @@ class OpenIOTAIMQTTExporter:
             ctx.verify_mode = ssl.CERT_REQUIRED
             return ctx
 
-        try:
-            context = await loop.run_in_executor(None, _build_context)
-            self._client.tls_set_context(context)
-            self._tls_configured = True
-            _LOGGER.info("MQTT TLS configured")
-        except Exception as e:
-            raise TlsError(str(e)) from e
+        context = await loop.run_in_executor(None, _build_context)
+        self._client.tls_set_context(context)
+        self._tls_configured = True
+        _LOGGER.info("MQTT TLS configured")
 
     async def _connect(self) -> None:
         assert self._client is not None
@@ -200,19 +266,14 @@ class OpenIOTAIMQTTExporter:
             self._keepalive,
         )
 
-        try:
-            await asyncio.wait_for(
-                loop.run_in_executor(None, _do_connect),
-                timeout=self._connect_timeout,
-            )
-            await asyncio.wait_for(
-                self._conn_event.wait(),
-                timeout=self._connect_timeout,
-            )
-        except Exception as e:
-            self.connected = False
-            self.last_error = str(e)
-            raise CannotConnect(str(e)) from e
+        await asyncio.wait_for(
+            loop.run_in_executor(None, _do_connect),
+            timeout=self._connect_timeout,
+        )
+        await asyncio.wait_for(
+            self._conn_event.wait(),
+            timeout=self._connect_timeout,
+        )
 
         if self._conn_rc != 0:
             raise CannotConnect(f"connack rc={self._conn_rc}")
@@ -254,11 +315,12 @@ class OpenIOTAIMQTTExporter:
     # Publishing
     # ------------------------------------------------------------------
     async def publish_snapshot(self, snapshot: Dict[str, Any]) -> None:
-        #await self._ensure_connected()
-        if not self.connected:
-            return
+        """Publish snapshot if connected.
 
-        assert self._client is not None
+        Connection management is handled by runtime loop.
+        """
+        if not self.connected or not self._client:
+            return
 
         payload = json.dumps(
             _json_safe(snapshot),
@@ -287,13 +349,9 @@ class OpenIOTAIMQTTExporter:
                 loop.run_in_executor(None, _publish),
                 timeout=self._publish_timeout + 2,
             )
-            _LOGGER.debug(
-                "MQTT publish successful (keys=%d)",
-                len(snapshot),
-            )
+            _LOGGER.debug("MQTT publish successful (keys=%d)", len(snapshot))
         except Exception as e:
             self.connected = False
             self.last_error = str(e)
-            _LOGGER.warning("MQTT publish failed, will retry later")
+            _LOGGER.debug("MQTT publish failed, reconnecting")
             await self._disconnect()
-            raise
