@@ -245,7 +245,14 @@ class OpenIOTAIMQTTExporter:
             _LOGGER.debug("MQTT payload size=%d bytes", len(payload))
 
         def _do_publish() -> None:
-            info = self._client.publish(self._topic, payload)
+            #info = self._client.publish(self._topic, payload)
+            info = self._client.publish(
+                self._topic,
+                payload,
+                qos=1,
+                retain=True,
+            )
+
             # Wait for the message to be sent
             info.wait_for_publish(timeout=self._publish_timeout)
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
