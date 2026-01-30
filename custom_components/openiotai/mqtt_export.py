@@ -250,6 +250,13 @@ class OpenIOTAIMQTTExporter:
 
         def _do_publish() -> None:
             #info = self._client.publish(self._topic, payload)
+
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "MQTT payload preview: %s",
+                    payload[:2000] + ("…" if len(payload) > 2000 else ""),
+                )
+
             info = self._client.publish(
                 self._topic,
                 payload,
