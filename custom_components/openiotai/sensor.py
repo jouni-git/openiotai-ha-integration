@@ -52,22 +52,23 @@ async def async_setup_entry(
     try:
         interval = timedelta(seconds=int(interval_sec))
     except Exception:
-        # Absolute safety fallback – should never happen due to validation
         interval = timedelta(seconds=DEFAULT_PUBLISH_INTERVAL)
 
     _LOGGER.info(
         "OpenIOTAI publish interval set to %s seconds (entry_id=%s)",
-        interval.total_seconds(),
+        int(interval.total_seconds()),
         entry_id,
     )
 
     # ------------------------------------------------------------------
     # 2. Polling coordinator (data source)
     # ------------------------------------------------------------------
-    coordinator = OpenIOTAIDataCoordinator(
-        hass,
-        update_interval=interval,
-    )
+    coordinator = OpenIOTAIDataCoordinator(hass)
+
+    # ✅ TÄRKEÄ KORJAUS:
+    # Asetetaan update_interval attribuuttina,
+    # koska coordinator ei ota sitä vastaan konstruktorissa.
+    coordinator.update_interval = interval
 
     await coordinator.async_config_entry_first_refresh()
 
@@ -78,7 +79,6 @@ async def async_setup_entry(
     exporter: Optional[OpenIOTAIMQTTExporter] = domain_data.get(entry_id)
 
     if exporter is None:
-        # This should never happen; log once and disable export
         _LOGGER.error(
             "OpenIOTAI MQTT exporter not found (entry_id=%s) – "
             "snapshot export disabled",
@@ -108,10 +108,6 @@ async def async_setup_entry(
             await exporter.publish_snapshot(snapshot)
 
         except CannotConnect:
-            # Expected and self-healing condition:
-            # - broker temporarily unavailable
-            # - reconnect in progress
-            # Must NEVER be logged as ERROR
             _LOGGER.debug(
                 "OpenIOTAI MQTT export skipped "
                 "(connect in progress, entry_id=%s)",
@@ -119,11 +115,9 @@ async def async_setup_entry(
             )
 
         except asyncio.CancelledError:
-            # Normal during reload / shutdown
             raise
 
         except Exception as err:
-            # This indicates a real bug
             _LOGGER.error(
                 "Unexpected OpenIOTAI MQTT export error "
                 "(entry_id=%s): %s",
