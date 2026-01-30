@@ -57,18 +57,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except KeyError as exc:
         raise ConfigEntryNotReady("Incomplete MQTT configuration") from exc
 
-    # Store exporter for diagnostics and entities
+    # Store exporter for sensor / diagnostics / binary_sensor
     hass.data[DOMAIN][entry.entry_id] = exporter
-
-    # Start MQTT runtime in background (no blocking network calls here)
-    hass.async_create_task(exporter.async_start())
 
     # Reload integration when options change
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
 
-    # Forward platforms (sensor + binary_sensor)
+    # Forward platforms
     await hass.config_entries.async_forward_entry_setups(
         entry, ["sensor", "binary_sensor"]
     )
