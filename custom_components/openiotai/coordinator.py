@@ -12,29 +12,68 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .const import DOMAIN
+from .const import DOMAIN, DEFAULT_PUBLISH_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
-
-DEFAULT_POLL_INTERVAL = timedelta(seconds=30)
 
 
 class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     """Coordinator that polls current Home Assistant state snapshots."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        *,
+        interval_seconds: int | None = None,
+    ) -> None:
+        if interval_seconds is None:
+            interval_seconds = DEFAULT_PUBLISH_INTERVAL
+
+        update_interval = timedelta(seconds=int(interval_seconds))
+
         super().__init__(
             hass=hass,
             logger=_LOGGER,
             name=DOMAIN,
-            update_interval=DEFAULT_POLL_INTERVAL,
+            update_interval=update_interval,
         )
 
         _LOGGER.info(
-            "Initializing OpenIOTAI DataUpdateCoordinator (interval=%s)",
-            DEFAULT_POLL_INTERVAL,
+            "Initializing OpenIOTAI DataUpdateCoordinator (interval=%ss)",
+            update_interval.total_seconds(),
         )
 
+    # -----------------------------------------------------------------
+    # Runtime control
+    # -----------------------------------------------------------------
+    def set_interval(self, seconds: int) -> None:
+        """Update polling interval at runtime (no reload required)."""
+        try:
+            seconds = int(seconds)
+            if seconds <= 0:
+                raise ValueError
+        except Exception:
+            _LOGGER.warning(
+                "Invalid poll interval requested (%r) – ignored",
+                seconds,
+            )
+            return
+
+        new_interval = timedelta(seconds=seconds)
+
+        if self.update_interval == new_interval:
+            return  # no-op
+
+        self.update_interval = new_interval
+
+        _LOGGER.info(
+            "OpenIOTAI polling interval updated to %ss",
+            seconds,
+        )
+
+    # -----------------------------------------------------------------
+    # Data collection
+    # -----------------------------------------------------------------
     async def _async_update_data(self) -> Dict[str, Any]:
         try:
             data: Dict[str, Any] = {}
@@ -43,17 +82,24 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                 data[state.entity_id] = {
                     "state": state.state,
                     "attributes": dict(state.attributes),
-                    "last_changed": state.last_changed.isoformat()
-                    if state.last_changed
-                    else None,
-                    "last_updated": state.last_updated.isoformat()
-                    if state.last_updated
-                    else None,
+                    "last_changed": (
+                        state.last_changed.isoformat()
+                        if state.last_changed
+                        else None
+                    ),
+                    "last_updated": (
+                        state.last_updated.isoformat()
+                        if state.last_updated
+                        else None
+                    ),
                 }
 
             _LOGGER.debug(
-                "OpenIOTAI polling completed: entities=%d",
+                "OpenIOTAI polling completed: entities=%d (interval=%ss)",
                 len(data),
+                self.update_interval.total_seconds()
+                if self.update_interval
+                else None,
             )
 
             return data
