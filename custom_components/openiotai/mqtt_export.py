@@ -254,7 +254,17 @@ class OpenIOTAIMQTTExporter:
             )
 
             # Wait for the message to be sent
-            info.wait_for_publish(timeout=self._publish_timeout)
+
+            try:
+                info.wait_for_publish(timeout=self._publish_timeout)
+            except RuntimeError as e:
+                _LOGGER.warning(
+                    "MQTT publish sent but not fully acknowledged (qos=1, retain=true): %s",
+                    e,
+                )
+                # Connection may drop after send; acceptable for retained snapshot
+                return
+
             if info.rc != mqtt.MQTT_ERR_SUCCESS:
                 raise RuntimeError(f"MQTT publish failed (rc={info.rc})")
 
@@ -264,8 +274,17 @@ class OpenIOTAIMQTTExporter:
                 timeout=self._publish_timeout + 2,
             )
             _LOGGER.debug("MQTT publish successful (entities=%d)", len(snapshot))
-        except Exception:
-            _LOGGER.exception("MQTT publish failed")
-            # Mark disconnected to force reconnect next time
+#        except Exception:
+#            _LOGGER.exception("MQTT publish failed")
+#            # Mark disconnected to force reconnect next time
+#            await self._disconnect()
+#            raise
+        except RuntimeError as e:
+            _LOGGER.warning(
+                "MQTT publish did not fully complete (will retry next cycle): %s",
+                e,
+            )
+            # Force reconnect next time, but do NOT raise
             await self._disconnect()
-            raise
+            return
+

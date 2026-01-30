@@ -15,4 +15,4 @@ DEFAULT_MQTT_PORT = 8883
 DEFAULT_MQTT_TOPIC = "data/hamqttexport"
 DEFAULT_MQTT_TLS = True
 DEFAULT_MQTT_USERNAME = "hamqtt"
-DEFAULT_MQTT_PASSWORD = "hamqttpass"
+DEFAULT_MQTT_PASSWORD = "hamqttpass" # Tämä on tahallisesti virheellinen tieto
