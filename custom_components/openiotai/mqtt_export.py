@@ -93,7 +93,7 @@ class OpenIOTAIMQTTExporter:
         self._connect_timeout = connect_timeout
         self._publish_timeout = publish_timeout
 
-        # Runtime state (diagnostics)
+        # Runtime state
         self.connected: bool = False
         self.last_error: Optional[str] = None
         self.last_connect_attempt: Optional[str] = None
@@ -110,6 +110,9 @@ class OpenIOTAIMQTTExporter:
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
 
+        # 🔑 CRITICAL: store asyncio loop for Paho callbacks
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
         _LOGGER.info(
             "MQTT exporter initialized "
             "(broker=%s:%s, tls=%s, topic=%s, client_id=%s)",
@@ -124,7 +127,6 @@ class OpenIOTAIMQTTExporter:
     # Runtime lifecycle
     # ------------------------------------------------------------------
     async def async_start(self) -> None:
-        """Start background MQTT connection management."""
         if self._running:
             return
 
@@ -136,7 +138,6 @@ class OpenIOTAIMQTTExporter:
         _LOGGER.debug("OpenIOTAI MQTT runtime started")
 
     async def async_stop(self) -> None:
-        """Stop runtime and disconnect."""
         if not self._running:
             return
 
@@ -153,7 +154,6 @@ class OpenIOTAIMQTTExporter:
         _LOGGER.debug("OpenIOTAI MQTT runtime stopped")
 
     async def _run(self) -> None:
-        """Background loop that maintains MQTT connection."""
         backoff = RECONNECT_INITIAL_SEC
 
         while not self._stop_event.is_set():
@@ -189,22 +189,17 @@ class OpenIOTAIMQTTExporter:
 
         def _on_connect(_client, _userdata, _flags, rc, _properties=None):
             self._conn_rc = rc
-            if rc == 0:
-                self.connected = True
-                self.last_error = None
-                _LOGGER.info("MQTT connected (rc=0)")
-            else:
-                self.connected = False
-                self.last_error = f"connect rejected rc={rc}"
-                _LOGGER.warning("MQTT connect rejected (rc=%s)", rc)
+            self.connected = rc == 0
+            self.last_error = None if rc == 0 else f"connect rejected rc={rc}"
 
-            if self._conn_event:
-                try:
-                    asyncio.get_running_loop().call_soon_threadsafe(
-                        self._conn_event.set
-                    )
-                except RuntimeError:
-                    pass
+            _LOGGER.info(
+                "MQTT connected (rc=%s)" if rc == 0 else "MQTT connect rejected (rc=%s)",
+                rc,
+            )
+
+            # 🔑 signal asyncio event safely from Paho thread
+            if self._conn_event and self._loop:
+                self._loop.call_soon_threadsafe(self._conn_event.set)
 
         def _on_disconnect(_client, _userdata, rc, _properties=None):
             self.connected = False
@@ -221,7 +216,6 @@ class OpenIOTAIMQTTExporter:
             return
 
         assert self._client is not None
-
         loop = asyncio.get_running_loop()
 
         def _build_context() -> ssl.SSLContext:
@@ -244,7 +238,10 @@ class OpenIOTAIMQTTExporter:
         self._conn_event = asyncio.Event()
         self._conn_rc = None
 
-        loop = asyncio.get_running_loop()
+        # 🔑 store loop for callbacks
+        self._loop = asyncio.get_running_loop()
+
+        loop = self._loop
 
         def _do_connect() -> None:
             self._client.loop_start()
@@ -315,10 +312,6 @@ class OpenIOTAIMQTTExporter:
     # Publishing
     # ------------------------------------------------------------------
     async def publish_snapshot(self, snapshot: Dict[str, Any]) -> None:
-        """Publish snapshot if connected.
-
-        Connection management is handled by runtime loop.
-        """
         if not self.connected or not self._client:
             return
 

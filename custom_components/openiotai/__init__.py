@@ -63,11 +63,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = exporter
 
     # ------------------------------------------------------------------
-    # 🔥 START MQTT RUNTIME (CRITICAL)
+    # Start MQTT runtime (background, non-blocking)
     # ------------------------------------------------------------------
-    # This starts background connection management and allows
-    # exporter.connected to ever become True.
-    hass.async_create_task(exporter.async_start())
+    try:
+        hass.async_create_task(exporter.async_start())
+        _LOGGER.debug(
+            "OpenIOTAI MQTT runtime task scheduled (entry_id=%s)",
+            entry.entry_id,
+        )
+    except Exception as err:
+        # This should never fail, but must not break setup
+        _LOGGER.error(
+            "Failed to start OpenIOTAI MQTT runtime (entry_id=%s): %s",
+            entry.entry_id,
+            err,
+        )
 
     # ------------------------------------------------------------------
     # Reload integration when options change
@@ -95,6 +105,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         exporter = hass.data[DOMAIN].pop(entry.entry_id, None)
         if exporter:
-            await exporter.async_stop()
+            try:
+                await exporter.async_stop()
+            except Exception:
+                # Never block unload
+                _LOGGER.debug(
+                    "OpenIOTAI MQTT runtime stop failed (ignored, entry_id=%s)",
+                    entry.entry_id,
+                )
 
     return unload_ok
