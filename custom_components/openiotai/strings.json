@@ -1,0 +1,10 @@
+{
+  "config": {
+    "error": {
+      "cannot_connect": "Unable to connect to the MQTT broker. Please check the server address, port, username, and password.",
+      "tls_error": "Failed to establish a secure TLS connection. Please verify the TLS settings and the CA certificate.",
+      "invalid_auth": "Invalid username or password for the MQTT broker.",
+      "unknown": "An unexpected error occurred while validating the MQTT connection. Please review the settings and try again."
+    }
+  }
+}
