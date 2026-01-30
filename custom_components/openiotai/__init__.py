@@ -57,14 +57,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except KeyError as exc:
         raise ConfigEntryNotReady("Incomplete MQTT configuration") from exc
 
-    await exporter.async_test_connection()
+    # Store exporter for diagnostics and entities
+    hass.data[DOMAIN][entry.entry_id] = exporter
 
+    # Start MQTT runtime in background (no blocking network calls here)
+    hass.async_create_task(exporter.async_start())
+
+    # Reload integration when options change
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
 
+    # Forward platforms (sensor + binary_sensor)
     await hass.config_entries.async_forward_entry_setups(
-        entry, ["sensor"]
+        entry, ["sensor", "binary_sensor"]
     )
 
     return True
@@ -72,6 +78,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload OpenIOTAI."""
-    return await hass.config_entries.async_forward_entry_unload(
-        entry, "sensor"
+    unload_ok = await hass.config_entries.async_forward_entry_unload(
+        entry, ["sensor", "binary_sensor"]
     )
+
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+
+    return unload_ok

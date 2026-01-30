@@ -13,19 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.config_entries import ConfigEntry
 
-from .const import (
-    DOMAIN,
-    CONF_MQTT_BROKER,
-    CONF_MQTT_PORT,
-    CONF_MQTT_TOPIC,
-    CONF_MQTT_TLS,
-    CONF_MQTT_CA_CERT,
-    CONF_MQTT_USERNAME,
-    CONF_MQTT_PASSWORD,
-    DEFAULT_MQTT_PORT,
-    DEFAULT_MQTT_TOPIC,
-    DEFAULT_MQTT_TLS,
-)
+from .const import DOMAIN
 from .coordinator import OpenIOTAIDataCoordinator
 from .mqtt_export import OpenIOTAIMQTTExporter
 
@@ -46,48 +34,27 @@ async def async_setup_entry(
     )
 
     # ------------------------------------------------------------------
-    # 1. Polling coordinator
+    # 1. Polling coordinator (data source)
     # ------------------------------------------------------------------
     coordinator = OpenIOTAIDataCoordinator(hass)
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry_id] = coordinator
-
     # ------------------------------------------------------------------
-    # 2. Resolve MQTT configuration (OPTIONS → DATA fallback)
+    # 2. Get MQTT exporter created during async_setup_entry
     # ------------------------------------------------------------------
-    cfg = entry.options or entry.data
+    domain_data = hass.data.get(DOMAIN, {})
+    exporter: Optional[OpenIOTAIMQTTExporter] = domain_data.get(entry_id)
 
-    mqtt_broker: Optional[str] = cfg.get(CONF_MQTT_BROKER)
-    mqtt_port: int = cfg.get(CONF_MQTT_PORT, DEFAULT_MQTT_PORT)
-    mqtt_topic: str = cfg.get(CONF_MQTT_TOPIC, DEFAULT_MQTT_TOPIC)
-    mqtt_tls: bool = cfg.get(CONF_MQTT_TLS, DEFAULT_MQTT_TLS)
-    mqtt_ca_cert: Optional[str] = cfg.get(CONF_MQTT_CA_CERT)
-    mqtt_username: Optional[str] = cfg.get(CONF_MQTT_USERNAME)
-    mqtt_password: Optional[str] = cfg.get(CONF_MQTT_PASSWORD)
-
-    if not mqtt_broker:
-        _LOGGER.warning(
-            "MQTT broker not configured, OpenIOTAI export disabled "
-            "(entry_id=%s)",
+    if exporter is None:
+        _LOGGER.error(
+            "OpenIOTAI MQTT exporter not found (entry_id=%s) – "
+            "snapshot export disabled",
             entry_id,
         )
         return
 
-    exporter = OpenIOTAIMQTTExporter(
-        broker=mqtt_broker,
-        port=mqtt_port,
-        topic=mqtt_topic,
-        use_tls=mqtt_tls,
-        ca_cert=mqtt_ca_cert,
-        username=mqtt_username,
-        password=mqtt_password,
-        client_id=f"openiotai-ha-{entry_id}",
-    )
-
     _LOGGER.info(
-        "OpenIOTAI MQTT export initialized (lazy connect, entry_id=%s)",
+        "OpenIOTAI MQTT exporter resolved (entry_id=%s)",
         entry_id,
     )
 
@@ -107,6 +74,7 @@ async def async_setup_entry(
         try:
             await exporter.publish_snapshot(snapshot)
         except Exception:
+            # Do NOT raise – runtime reconnect logic handles recovery
             _LOGGER.exception(
                 "OpenIOTAI MQTT export failed (entry_id=%s)",
                 entry_id,
