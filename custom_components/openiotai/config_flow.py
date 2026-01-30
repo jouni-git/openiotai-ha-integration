@@ -38,7 +38,7 @@ class OpenIOTAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict | None = None
     ) -> FlowResult:
-        """Initial setup step."""
+        """Initial setup step (no config yet, options only)."""
         if user_input is not None:
             return self.async_create_entry(
                 title="OpenIOTAI",
@@ -82,7 +82,7 @@ class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "invalid_port"
 
             # --------------------------------------------------------------
-            # 2. MQTT connection test (blocking but short & safe)
+            # 2. Hard validation: real MQTT CONNECT + CONNACK
             # --------------------------------------------------------------
             if not errors:
                 try:
@@ -162,10 +162,11 @@ class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
         )
 
     # ------------------------------------------------------------------
-    # MQTT connection test
+    # MQTT connection test (authoritative)
     # ------------------------------------------------------------------
     async def _async_test_mqtt_connection(self, cfg: dict) -> None:
-        """Test MQTT connection with TLS and auth."""
+        """Test MQTT connection including authentication (CONNACK)."""
+
         broker = cfg[CONF_MQTT_BROKER]
         port = cfg[CONF_MQTT_PORT]
         use_tls = cfg[CONF_MQTT_TLS]
@@ -173,38 +174,58 @@ class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
         username = cfg.get(CONF_MQTT_USERNAME)
         password = cfg.get(CONF_MQTT_PASSWORD)
 
-        def _blocking_test() -> None:
-            client = mqtt.Client(client_id="openiotai-config-test")
+        loop = asyncio.get_running_loop()
+        connected = asyncio.Event()
+        error: dict[str, str | None] = {"reason": None}
+
+        def _on_connect(_client, _userdata, _flags, rc, _properties=None):
+            if rc == 0:
+                loop.call_soon_threadsafe(connected.set)
+            elif rc in (4, 5):
+                error["reason"] = "auth"
+                loop.call_soon_threadsafe(connected.set)
+            else:
+                error["reason"] = "connect"
+                loop.call_soon_threadsafe(connected.set)
+
+        def _blocking() -> None:
+            client = mqtt.Client(client_id="openiotai-options-test")
+            client.on_connect = _on_connect
 
             if username:
                 client.username_pw_set(username, password)
 
             if use_tls:
                 try:
-                    context = ssl.create_default_context(
+                    ctx = ssl.create_default_context(
                         cafile=ca_cert if ca_cert else None
                     )
-                    client.tls_set_context(context)
+                    client.tls_set_context(ctx)
                 except Exception as exc:
                     raise TlsError from exc
 
             try:
-                result = client.connect(broker, port, keepalive=5)
-                if result != mqtt.MQTT_ERR_SUCCESS:
-                    raise CannotConnect
-                client.disconnect()
+                client.connect(broker, port, keepalive=5)
+                client.loop_start()
+
+                try:
+                    if not connected.wait(timeout=5):
+                        raise CannotConnect
+                finally:
+                    client.loop_stop()
+                    client.disconnect()
+
             except ssl.SSLError as exc:
                 raise TlsError from exc
             except socket.gaierror as exc:
                 raise CannotConnect from exc
-            except ConnectionRefusedError as exc:
-                raise CannotConnect from exc
-            except mqtt.MQTTException as exc:
-                raise InvalidAuth from exc
 
-        await asyncio.get_running_loop().run_in_executor(
-            None, _blocking_test
-        )
+            if error["reason"] == "auth":
+                raise InvalidAuth
+            if error["reason"] == "connect":
+                raise CannotConnect
+
+        await loop.run_in_executor(None, _blocking)
 
 
 # ----------------------------------------------------------------------

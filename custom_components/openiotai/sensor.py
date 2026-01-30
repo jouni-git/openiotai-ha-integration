@@ -46,7 +46,7 @@ async def async_setup_entry(
     )
 
     # ------------------------------------------------------------------
-    # 1. Polling coordinator (SAFE in setup)
+    # 1. Polling coordinator
     # ------------------------------------------------------------------
     coordinator = OpenIOTAIDataCoordinator(hass)
     await coordinator.async_config_entry_first_refresh()
@@ -55,17 +55,17 @@ async def async_setup_entry(
     hass.data[DOMAIN][entry_id] = coordinator
 
     # ------------------------------------------------------------------
-    # 2. Resolve MQTT configuration
+    # 2. Resolve MQTT configuration (OPTIONS → DATA fallback)
     # ------------------------------------------------------------------
-    options = entry.options
+    cfg = entry.options or entry.data
 
-    mqtt_broker: Optional[str] = options.get(CONF_MQTT_BROKER)
-    mqtt_port: int = options.get(CONF_MQTT_PORT, DEFAULT_MQTT_PORT)
-    mqtt_topic: str = options.get(CONF_MQTT_TOPIC, DEFAULT_MQTT_TOPIC)
-    mqtt_tls: bool = options.get(CONF_MQTT_TLS, DEFAULT_MQTT_TLS)
-    mqtt_ca_cert: Optional[str] = options.get(CONF_MQTT_CA_CERT)
-    mqtt_username: Optional[str] = options.get(CONF_MQTT_USERNAME)
-    mqtt_password: Optional[str] = options.get(CONF_MQTT_PASSWORD)
+    mqtt_broker: Optional[str] = cfg.get(CONF_MQTT_BROKER)
+    mqtt_port: int = cfg.get(CONF_MQTT_PORT, DEFAULT_MQTT_PORT)
+    mqtt_topic: str = cfg.get(CONF_MQTT_TOPIC, DEFAULT_MQTT_TOPIC)
+    mqtt_tls: bool = cfg.get(CONF_MQTT_TLS, DEFAULT_MQTT_TLS)
+    mqtt_ca_cert: Optional[str] = cfg.get(CONF_MQTT_CA_CERT)
+    mqtt_username: Optional[str] = cfg.get(CONF_MQTT_USERNAME)
+    mqtt_password: Optional[str] = cfg.get(CONF_MQTT_PASSWORD)
 
     if not mqtt_broker:
         _LOGGER.warning(
@@ -92,7 +92,7 @@ async def async_setup_entry(
     )
 
     # ------------------------------------------------------------------
-    # 3. Export snapshot after each polling update (RUNTIME)
+    # 3. Export snapshot after each polling update (runtime)
     # ------------------------------------------------------------------
     async def _export_after_update() -> None:
         snapshot = coordinator.data or {}
