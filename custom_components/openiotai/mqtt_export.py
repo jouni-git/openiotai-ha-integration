@@ -244,6 +244,10 @@ class OpenIOTAIMQTTExporter:
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug("MQTT payload size=%d bytes", len(payload))
 
+
+        _LOGGER.info("MQTT publishing to topic=%s broker=%s:%s tls=%s user=%s", self._topic, self._broker, self._port, self._use_tls, self._username)
+
+
         def _do_publish() -> None:
             #info = self._client.publish(self._topic, payload)
             info = self._client.publish(
@@ -258,8 +262,8 @@ class OpenIOTAIMQTTExporter:
             try:
                 info.wait_for_publish(timeout=self._publish_timeout)
             except RuntimeError as e:
-                _LOGGER.warning(
-                    "MQTT publish sent but not fully acknowledged (qos=1, retain=true): %s",
+                _LOGGER.debug(
+                    "MQTT publish ACK not received (qos=1, retain=true, will rely on retained snapshot): %s",
                     e,
                 )
                 # Connection may drop after send; acceptable for retained snapshot
