@@ -65,9 +65,7 @@ async def async_setup_entry(
     # ------------------------------------------------------------------
     coordinator = OpenIOTAIDataCoordinator(hass)
 
-    # ✅ TÄRKEÄ KORJAUS:
-    # Asetetaan update_interval attribuuttina,
-    # koska coordinator ei ota sitä vastaan konstruktorissa.
+    # ⚠️ TÄRKEÄ: EI konstruktoriparametrina
     coordinator.update_interval = interval
 
     await coordinator.async_config_entry_first_refresh()
@@ -75,21 +73,14 @@ async def async_setup_entry(
     # ------------------------------------------------------------------
     # 3. Get MQTT exporter created during async_setup_entry
     # ------------------------------------------------------------------
-    domain_data = hass.data.get(DOMAIN, {})
-    exporter: Optional[OpenIOTAIMQTTExporter] = domain_data.get(entry_id)
+    exporter: Optional[OpenIOTAIMQTTExporter] = hass.data.get(DOMAIN, {}).get(entry_id)
 
     if exporter is None:
         _LOGGER.error(
-            "OpenIOTAI MQTT exporter not found (entry_id=%s) – "
-            "snapshot export disabled",
+            "OpenIOTAI MQTT exporter not found (entry_id=%s) – export disabled",
             entry_id,
         )
         return
-
-    _LOGGER.debug(
-        "OpenIOTAI MQTT exporter resolved (entry_id=%s)",
-        entry_id,
-    )
 
     # ------------------------------------------------------------------
     # 4. Export snapshot after each polling update
@@ -97,20 +88,13 @@ async def async_setup_entry(
     async def _export_after_update() -> None:
         snapshot = coordinator.data or {}
 
-        _LOGGER.debug(
-            "Exporting OpenIOTAI snapshot to MQTT "
-            "(entities=%d, entry_id=%s)",
-            len(snapshot),
-            entry_id,
-        )
-
         try:
             await exporter.publish_snapshot(snapshot)
 
         except CannotConnect:
+            # Expected, transient condition
             _LOGGER.debug(
-                "OpenIOTAI MQTT export skipped "
-                "(connect in progress, entry_id=%s)",
+                "OpenIOTAI MQTT export skipped (connect in progress, entry_id=%s)",
                 entry_id,
             )
 
@@ -119,8 +103,7 @@ async def async_setup_entry(
 
         except Exception as err:
             _LOGGER.error(
-                "Unexpected OpenIOTAI MQTT export error "
-                "(entry_id=%s): %s",
+                "Unexpected OpenIOTAI MQTT export error (entry_id=%s): %s",
                 entry_id,
                 err,
                 exc_info=True,
