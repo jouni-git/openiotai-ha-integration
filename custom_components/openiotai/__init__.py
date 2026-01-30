@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
@@ -25,20 +25,45 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: tuple[str, ...] = ("sensor", "binary_sensor")
 
 
+# ---------------------------------------------------------------------
+# Integration setup (YAML not used)
+# ---------------------------------------------------------------------
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up OpenIOTAI (YAML not used)."""
     hass.data.setdefault(DOMAIN, {})
     return True
 
 
-@callback
-def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload integration when options change."""
-    hass.async_create_task(
-        hass.config_entries.async_reload(entry.entry_id)
-    )
+# ---------------------------------------------------------------------
+# Options update listener (NO reload!)
+# ---------------------------------------------------------------------
+async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Apply updated options to runtime without reloading integration."""
+    exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry.entry_id)
+    if not exporter:
+        _LOGGER.debug(
+            "Options updated but exporter not found (entry_id=%s)",
+            entry.entry_id,
+        )
+        return
+
+    try:
+        exporter.update_options(entry.options)
+        _LOGGER.debug(
+            "OpenIOTAI options applied to runtime (entry_id=%s)",
+            entry.entry_id,
+        )
+    except Exception as err:
+        # Never break HA on option update
+        _LOGGER.error(
+            "Failed to apply OpenIOTAI options (entry_id=%s): %s",
+            entry.entry_id,
+            err,
+        )
 
 
+# ---------------------------------------------------------------------
+# Entry setup
+# ---------------------------------------------------------------------
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OpenIOTAI from a config entry."""
     _LOGGER.info("Setting up OpenIOTAI (entry_id=%s)", entry.entry_id)
@@ -61,38 +86,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Incomplete MQTT configuration"
         ) from exc
 
-    # ------------------------------------------------------------------
-    # Store exporter for runtime / diagnostics
-    # ------------------------------------------------------------------
+    # Store exporter
     hass.data[DOMAIN][entry.entry_id] = exporter
 
-    # ------------------------------------------------------------------
     # Start MQTT runtime (non-blocking)
-    # ------------------------------------------------------------------
-    try:
-        hass.async_create_task(exporter.async_start())
-        _LOGGER.debug(
-            "OpenIOTAI MQTT runtime scheduled (entry_id=%s)",
-            entry.entry_id,
-        )
-    except Exception as err:
-        # Must never block integration setup
-        _LOGGER.error(
-            "Failed to start OpenIOTAI MQTT runtime (entry_id=%s): %s",
-            entry.entry_id,
-            err,
-        )
+    hass.async_create_task(exporter.async_start())
 
-    # ------------------------------------------------------------------
-    # Reload integration when options change
-    # ------------------------------------------------------------------
+    # Register options update listener (no reload)
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
 
-    # ------------------------------------------------------------------
-    # Forward platforms (SETUP)
-    # ------------------------------------------------------------------
+    # Forward platforms
     await hass.config_entries.async_forward_entry_setups(
         entry,
         PLATFORMS,
@@ -101,30 +106,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------
+# Entry unload
+# ---------------------------------------------------------------------
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload OpenIOTAI integration."""
     unload_ok = True
 
-    # ------------------------------------------------------------------
-    # Unload platforms (UNLOAD)
-    # ------------------------------------------------------------------
+    # Unload platforms
     for platform in PLATFORMS:
         unload_ok &= await hass.config_entries.async_forward_entry_unload(
             entry, platform
         )
 
-    # ------------------------------------------------------------------
     # Stop MQTT runtime
-    # ------------------------------------------------------------------
-    exporter = hass.data[DOMAIN].pop(entry.entry_id, None)
+    exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].pop(
+        entry.entry_id, None
+    )
     if exporter:
         try:
             await exporter.async_stop()
-        except Exception:
-            # Never block unload
+        except Exception as err:
             _LOGGER.debug(
-                "OpenIOTAI MQTT runtime stop failed (ignored, entry_id=%s)",
+                "OpenIOTAI MQTT runtime stop failed (ignored, entry_id=%s): %s",
                 entry.entry_id,
+                err,
             )
 
     return unload_ok
