@@ -6,7 +6,6 @@ No Home Assistant sensor entities are created.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict
 
@@ -22,10 +21,10 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------
-# Snapshot delta helper (optional, safe to keep)
+# Snapshot delta helper
 # ---------------------------------------------------------------------
 class SnapshotDelta:
-    """Computes delta between successive snapshots."""
+    """Compute delta between successive snapshots."""
 
     def __init__(self) -> None:
         self._last: Dict[str, Any] | None = None
@@ -35,7 +34,7 @@ class SnapshotDelta:
             self._last = current
             return current
 
-        delta: Dict[str, Any] = {
+        delta = {
             k: v for k, v in current.items()
             if self._last.get(k) != v
         }
@@ -52,6 +51,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Set up OpenIOTAI polling + MQTT export pipeline."""
     entry_id = entry.entry_id
 
     _LOGGER.info(
@@ -59,34 +59,39 @@ async def async_setup_entry(
         entry_id,
     )
 
-    # ---------------------------------------------------------
-    # 1. Create coordinator (poll interval set elsewhere!)
-    # ---------------------------------------------------------
+    # -----------------------------------------------------------------
+    # 1. Create polling coordinator
+    # -----------------------------------------------------------------
     coordinator = OpenIOTAIDataCoordinator(hass)
 
-    # 🔑 TÄRKEÄÄ:
-    # Pollausväli asetetaan ja päivitetään __init__.py:ssä
-    # Options listener hoitaa runtime-muutokset
+    # NOTE:
+    # - update_interval is set in coordinator __init__
+    # - runtime changes are applied via __init__.py options listener
 
     await coordinator.async_config_entry_first_refresh()
 
-    # Store coordinator for runtime updates
+    # Register coordinator for runtime access (CRITICAL)
     hass.data[DOMAIN]["coordinators"][entry_id] = coordinator
 
-    # ---------------------------------------------------------
+    _LOGGER.debug(
+        "OpenIOTAI coordinator registered (entry_id=%s)",
+        entry_id,
+    )
+
+    # -----------------------------------------------------------------
     # 2. Get MQTT exporter
-    # ---------------------------------------------------------
+    # -----------------------------------------------------------------
     exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
     if not exporter:
         _LOGGER.error(
-            "MQTT exporter missing (entry_id=%s) – export disabled",
+            "OpenIOTAI MQTT exporter missing (entry_id=%s) – export disabled",
             entry_id,
         )
         return
 
-    # ---------------------------------------------------------
-    # 3. Publish snapshot after each poll
-    # ---------------------------------------------------------
+    # -----------------------------------------------------------------
+    # 3. Publish snapshot delta after each poll
+    # -----------------------------------------------------------------
     delta = SnapshotDelta()
 
     async def _export_after_update() -> None:
@@ -100,7 +105,7 @@ async def async_setup_entry(
             await exporter.publish_snapshot(payload)
         except Exception as err:
             _LOGGER.debug(
-                "MQTT publish skipped/failed (entry_id=%s): %s",
+                "OpenIOTAI MQTT publish failed (entry_id=%s): %s",
                 entry_id,
                 err,
             )
@@ -110,6 +115,6 @@ async def async_setup_entry(
     )
 
     _LOGGER.info(
-        "OpenIOTAI poll→publish pipeline active (entry_id=%s)",
+        "OpenIOTAI poll → MQTT publish pipeline active (entry_id=%s)",
         entry_id,
     )
