@@ -500,93 +500,139 @@ class OpenIOTAIMQTTExporter:
             self._tls_configured = False
             self._loop_started = False
 
-    # ------------------------------------------------------------------
-    # Delta computation
-    # ------------------------------------------------------------------
-    def _compute_delta(self, snapshot: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
-        """Return (delta_payload, changed_count). Also updates nothing (commit happens after successful publish).
 
-        Snapshot is expected to be a dict mapping keys -> values.
-        We consider a key changed if its stable JSON differs from last sent.
+
+    def _compute_delta_entities(self, snapshot: Dict[str, Any]) -> set[str]:
+        """Return a set of entity_ids whose payload has changed since last publish.
+
+        Uses stable JSON comparison per entity.
+        Does NOT mutate internal state.
         """
         if not snapshot:
-            return {}, 0
+            return set()
 
-        delta: Dict[str, Any] = {}
-        changed = 0
+        changed: set[str] = set()
 
-        # Changed / new keys
-        for k, v in snapshot.items():
-            ks = str(k)
-            vs = _stable_json(v)
-            if self._last_sent_map.get(ks) != vs:
-                delta[ks] = v
-                changed += 1
+        # Changed / new entities
+        for entity_id, value in snapshot.items():
+            key = str(entity_id)
+            value_json = _stable_json(value)
+            if self._last_sent_map.get(key) != value_json:
+                changed.add(key)
 
-        # Removed keys (optional): if something disappeared, publish null
-        # (You can disable this if you never need "deletions".)
+        # Removed entities → publish tombstone (value=None)
         removed = set(self._last_sent_map.keys()) - {str(k) for k in snapshot.keys()}
-        for ks in removed:
-            delta[ks] = None
-            changed += 1
+        for key in removed:
+            changed.add(key)
 
-        return delta, changed
+        return changed
 
-    def _commit_delta_state(self, snapshot: Dict[str, Any]) -> None:
-        """Commit last sent state after successful publish."""
-        self._last_sent_map = {str(k): _stable_json(v) for k, v in snapshot.items()}
 
-    # ------------------------------------------------------------------
-    # Publishing
-    # ------------------------------------------------------------------
+    def _commit_entity_state(self, entity_id: str, value: Any) -> None:
+        """Commit last sent state for a single entity after successful publish."""
+        if value is None:
+            self._last_sent_map.pop(entity_id, None)
+        else:
+            self._last_sent_map[entity_id] = _stable_json(value)
+
+
+    def _build_entity_event(self, entity_id: str, state: Any) -> Dict[str, Any]:
+        """Build a ha.entity.v1 event from raw HA state data."""
+        now = datetime.utcnow().isoformat() + "Z"
+
+        attributes = {}
+        raw_state = None
+
+        if isinstance(state, dict):
+            raw_state = state.get("state")
+            attributes = state.get("attributes", {})
+            last_changed = state.get("last_changed")
+            last_updated = state.get("last_updated")
+        else:
+            raw_state = state
+            last_changed = None
+            last_updated = None
+
+        numeric_value: Optional[float] = None
+        is_numeric = False
+
+        try:
+            numeric_value = float(raw_state)
+            is_numeric = True
+        except Exception:
+            pass
+
+        domain = entity_id.split(".", 1)[0] if "." in entity_id else "unknown"
+
+        return {
+            "source": "homeassistant",
+            "schema": "ha.entity.v1",
+            "domain": domain,
+            "entity_id": entity_id,
+            "event_type": "state_changed",
+
+            "timestamps": {
+                "last_changed": last_changed,
+                "last_updated": last_updated,
+                "ingest_received": now,
+            },
+
+            "state": {
+                "raw": raw_state,
+                "numeric": is_numeric,
+                "value": numeric_value,
+                "is_null": raw_state is None,
+            },
+
+            "attributes": attributes,
+        }
+
+
     async def publish_snapshot(self, snapshot: Dict[str, Any]) -> None:
-        """Publish a snapshot (full or delta depending on configuration).
+        """Publish entity events (one MQTT message per entity).
 
-        If not connected, silently drop (we do NOT force reconnect here).
-        If publish fails, request reconnect (handled by _run()).
+        Snapshot is used only as input; it is never published as-is.
         """
-        if not self.connected or not self._client:
+        if not self.connected or not self._client or not snapshot:
             return
 
-        # Choose payload
-        to_send: Dict[str, Any]
-        changed_count: int
-
+        # Determine which entities to publish
         if self._delta_publish:
-            to_send, changed_count = self._compute_delta(snapshot)
-            if changed_count == 0:
-                # Nothing changed -> no publish
+            entities = self._compute_delta_entities(snapshot)
+            if not entities:
                 return
         else:
-            to_send = snapshot
-            changed_count = len(snapshot)
-
-        payload = json.dumps(_json_safe(to_send), ensure_ascii=False, separators=(",", ":"))
-
-        if _LOGGER.isEnabledFor(logging.DEBUG):
-            _LOGGER.debug("MQTT payload size=%d bytes", len(payload))
+            entities = set(snapshot.keys())
 
         loop = asyncio.get_running_loop()
 
-        def _publish_blocking() -> None:
-            # qos=1 to get delivery attempt tracking; retain for latest snapshot/delta
-            info = self._client.publish(self._topic, payload, qos=1, retain=True)
-            info.wait_for_publish(timeout=self._publish_timeout)
-            if info.rc != mqtt.MQTT_ERR_SUCCESS:
-                raise RuntimeError(f"publish rc={info.rc}")
+        for entity_id in entities:
+            value = snapshot.get(entity_id)  # may be None (tombstone)
+            event = self._build_entity_event(entity_id, value)
+            payload = json.dumps(_json_safe(event), ensure_ascii=False, separators=(",", ":"))
 
-        try:
-            await asyncio.wait_for(loop.run_in_executor(None, _publish_blocking), timeout=self._publish_timeout + 2)
-            _LOGGER.debug("MQTT publish successful (keys=%d)", changed_count)
+            def _publish_blocking() -> None:
+                info = self._client.publish(
+                    self._topic,
+                    payload,
+                    qos=1,
+                    retain=False,
+                )
+                info.wait_for_publish(timeout=self._publish_timeout)
+                if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                    raise RuntimeError(f"publish rc={info.rc}")
 
-            # Only commit delta baseline after a successful publish
-            if self._delta_publish:
-                self._commit_delta_state(snapshot)
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, _publish_blocking),
+                    timeout=self._publish_timeout + 2,
+                )
+                self._commit_entity_state(str(entity_id), value)
+                _LOGGER.debug("Published entity event (entity_id=%s)", entity_id)
 
-        except Exception as exc:
-            self.connected = False
-            self.last_error = str(exc)
-            _LOGGER.debug("MQTT publish failed (will reconnect): %s", exc)
-
-            # Do NOT disconnect here; just request reconnect and let _run() do the teardown cleanly.
-            self._reconnect_event.set()
+            except Exception as exc:
+                self.connected = False
+                self.last_error = str(exc)
+                _LOGGER.debug("MQTT publish failed (entity=%s): %s", entity_id, exc)
+                self._reconnect_event.set()
+                return
