@@ -45,92 +45,90 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Apply updated options at runtime without reloading the integration."""
     entry_id = entry.entry_id
 
-    # Merge config entry data + options (options override data)
+    # Options override data (HA best practice for merged runtime config)
     cfg = {**entry.data, **entry.options}
 
-    _LOGGER.debug(
-        "OpenIOTAI options updated (entry_id=%s): %s",
+    _LOGGER.warning(
+        "OpenIOTAI OPTIONS LISTENER FIRED (entry_id=%s) data=%s options=%s merged=%s",
         entry_id,
+        dict(entry.data),
+        dict(entry.options),
         cfg,
     )
 
     # ------------------------------------------------------------
-    # 1. Update MQTT exporter runtime options
+    # 1) Update MQTT exporter options
     # ------------------------------------------------------------
     exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
     if exporter:
         try:
             exporter.update_options(cfg)
-            _LOGGER.debug(
-                "OpenIOTAI MQTT options applied at runtime (entry_id=%s)",
-                entry_id,
-            )
+            _LOGGER.warning("OpenIOTAI MQTT options applied (entry_id=%s)", entry_id)
         except Exception as err:
-            _LOGGER.error(
-                "Failed to apply MQTT options (entry_id=%s): %s",
-                entry_id,
-                err,
-            )
+            _LOGGER.exception("Failed to apply MQTT options (entry_id=%s): %s", entry_id, err)
     else:
-        _LOGGER.warning(
-            "OpenIOTAI MQTT exporter not found (entry_id=%s)",
-            entry_id,
-        )
+        _LOGGER.warning("OpenIOTAI MQTT exporter NOT found (entry_id=%s)", entry_id)
 
     # ------------------------------------------------------------
-    # 2. Update polling interval (DataUpdateCoordinator)
+    # 2) Resolve polling interval from cfg
     # ------------------------------------------------------------
+    # Primary key
+    interval_raw = cfg.get(CONF_PUBLISH_INTERVAL)
+
+    # Safety fallbacks in case OptionsFlow uses a different key name
+    if interval_raw is None:
+        interval_raw = (
+            cfg.get("publish_interval")
+            or cfg.get("poll_interval")
+            or cfg.get("polling_interval")
+        )
+
     try:
-        interval_sec = int(
-            cfg.get(CONF_PUBLISH_INTERVAL, DEFAULT_PUBLISH_INTERVAL)
-        )
+        interval_sec = int(interval_raw) if interval_raw is not None else int(DEFAULT_PUBLISH_INTERVAL)
+        if interval_sec <= 0:
+            raise ValueError
     except Exception:
-        interval_sec = DEFAULT_PUBLISH_INTERVAL
+        _LOGGER.warning(
+            "Invalid interval in options (entry_id=%s): raw=%r -> fallback=%s",
+            entry_id,
+            interval_raw,
+            DEFAULT_PUBLISH_INTERVAL,
+        )
+        interval_sec = int(DEFAULT_PUBLISH_INTERVAL)
 
-    coordinator = hass.data[DOMAIN]["coordinators"].get(entry_id)
+    # ------------------------------------------------------------
+    # 3) Update coordinator interval + reschedule
+    # ------------------------------------------------------------
+    coordinators = hass.data.get(DOMAIN, {}).get("coordinators", {})
+    coordinator = coordinators.get(entry_id)
+
     if not coordinator:
         _LOGGER.warning(
-            "OpenIOTAI coordinator not found – polling interval not updated "
-            "(entry_id=%s)",
+            "OpenIOTAI coordinator NOT found (entry_id=%s). Known keys=%s",
             entry_id,
+            list(coordinators.keys()),
         )
         return
 
-    coordinator.update_interval = timedelta(seconds=interval_sec)
-    coordinator._schedule_refresh()  # pylint: disable=protected-access
+    old = coordinator.update_interval.total_seconds() if coordinator.update_interval else None
 
-    _LOGGER.info(
-        "OpenIOTAI polling interval updated at runtime → %ss (entry_id=%s)",
-        interval_sec,
-        entry_id,
-    )
-
-    # ------------------------------------------------------------
-    # 2. Update polling interval (DataUpdateCoordinator)
-    # ------------------------------------------------------------
+    # Use coordinator API
     try:
-        interval_sec = int(
-            cfg.get(CONF_PUBLISH_INTERVAL, DEFAULT_PUBLISH_INTERVAL)
-        )
-    except Exception:
-        interval_sec = DEFAULT_PUBLISH_INTERVAL
-
-    coordinator = hass.data[DOMAIN]["coordinators"].get(entry_id)
-    if not coordinator:
-        _LOGGER.debug(
-            "OpenIOTAI coordinator not found, polling interval not updated "
-            "(entry_id=%s)",
-            entry_id,
-        )
+        coordinator.set_interval(interval_sec)
+    except Exception as err:
+        _LOGGER.exception("Failed to set coordinator interval (entry_id=%s): %s", entry_id, err)
         return
 
-    coordinator.update_interval = timedelta(seconds=interval_sec)
+    new = coordinator.update_interval.total_seconds() if coordinator.update_interval else None
+
+    # Reschedule next refresh using the new interval
     coordinator._schedule_refresh()  # pylint: disable=protected-access
 
-    _LOGGER.debug(
-        "OpenIOTAI polling interval updated at runtime → %ss (entry_id=%s)",
-        interval_sec,
+    _LOGGER.warning(
+        "OpenIOTAI polling interval updated (entry_id=%s): %s -> %s seconds",
         entry_id,
+        old,
+        new,
     )
 
 
