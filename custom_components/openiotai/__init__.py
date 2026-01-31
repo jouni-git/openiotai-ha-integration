@@ -44,7 +44,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Apply updated options at runtime without reloading the integration."""
     entry_id = entry.entry_id
-    cfg = entry.options or entry.data
+    #cfg = entry.options or entry.data
+    cfg = {**entry.data, **entry.options}
 
     # ------------------------------------------------------------
     # 1. Update MQTT exporter runtime options
