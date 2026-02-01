@@ -6,7 +6,6 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
 
 from .const import (
     DOMAIN,
@@ -74,9 +73,6 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
         _sanitize_cfg(cfg),
     )
 
-    # ------------------------------------------------------------
-    # 1. Update / create MQTT exporter
-    # ------------------------------------------------------------
     exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
 
     mqtt_required = (
@@ -124,9 +120,10 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
                 entry_id,
             )
 
-    # ------------------------------------------------------------
-    # 2. Update polling interval (DataUpdateCoordinator)
-    # ------------------------------------------------------------
+    coordinator = hass.data.get(DOMAIN, {}).get("coordinators", {}).get(entry_id)
+    if not coordinator:
+        return
+
     try:
         interval_sec = int(
             cfg.get(CONF_PUBLISH_INTERVAL, DEFAULT_PUBLISH_INTERVAL)
@@ -134,38 +131,10 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
         if interval_sec <= 0:
             raise ValueError
     except Exception:
-        _LOGGER.warning(
-            "Invalid publish_interval in options (entry_id=%s), "
-            "falling back to default=%s",
-            entry_id,
-            DEFAULT_PUBLISH_INTERVAL,
-        )
         interval_sec = DEFAULT_PUBLISH_INTERVAL
-
-    coordinator = hass.data.get(DOMAIN, {}).get("coordinators", {}).get(entry_id)
-    if not coordinator:
-        _LOGGER.warning(
-            "OpenIOTAI coordinator not found – polling interval not updated "
-            "(entry_id=%s)",
-            entry_id,
-        )
-        return
-
-    old_interval = (
-        coordinator.update_interval.total_seconds()
-        if coordinator.update_interval
-        else None
-    )
 
     coordinator.set_interval(interval_sec)
     coordinator._schedule_refresh()  # pylint: disable=protected-access
-
-    _LOGGER.info(
-        "OpenIOTAI polling interval updated (entry_id=%s): %s → %ss",
-        entry_id,
-        old_interval,
-        interval_sec,
-    )
 
 
 # ---------------------------------------------------------------------
@@ -181,41 +150,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     cfg = {**entry.data, **entry.options}
 
-    # ------------------------------------------------------------
-    # 1. Register virtual device (CRITICAL for Device info)
-    # ------------------------------------------------------------
-    device_registry = dr.async_get(hass)
-
-    device = device_registry.async_get_or_create(
-        config_entry_id=entry_id,
-        identifiers={(DOMAIN, entry_id)},
-        name="OpenIOTAI",
-        manufacturer="OpenIOTAI",
-        model="MQTT Exporter",
-        entry_type=dr.DeviceEntryType.SERVICE,
-    )
-
-    _LOGGER.debug(
-        "OpenIOTAI device registered (device_id=%s, entry_id=%s)",
-        device.id,
-        entry_id,
-    )
-
-    # ------------------------------------------------------------
-    # 2. Create MQTT exporter if configuration is complete
-    # ------------------------------------------------------------
     mqtt_required = (
         CONF_MQTT_BROKER,
         CONF_MQTT_PORT,
         CONF_MQTT_TOPIC,
     )
 
-    if all(k in cfg for k in mqtt_required):
-        _LOGGER.info(
-            "OpenIOTAI MQTT configuration complete – starting exporter (entry_id=%s)",
-            entry_id,
-        )
+    exporter: OpenIOTAIMQTTExporter | None = None
 
+    if all(k in cfg for k in mqtt_required):
         exporter = OpenIOTAIMQTTExporter(
             broker=cfg[CONF_MQTT_BROKER],
             port=cfg[CONF_MQTT_PORT],
@@ -230,29 +173,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][entry_id] = exporter
         await exporter.async_start()
     else:
-        _LOGGER.info(
-            "OpenIOTAI MQTT not started yet – configuration incomplete (entry_id=%s)",
-            entry_id,
-        )
+        hass.data[DOMAIN][entry_id] = None
 
-    # ------------------------------------------------------------
-    # 3. Register options update listener
-    # ------------------------------------------------------------
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
 
-    # ------------------------------------------------------------
-    # 4. Forward platforms
-    # ------------------------------------------------------------
     await hass.config_entries.async_forward_entry_setups(
         entry,
         PLATFORMS,
-    )
-
-    _LOGGER.info(
-        "OpenIOTAI setup completed successfully (entry_id=%s)",
-        entry_id,
     )
 
     return True
@@ -275,12 +204,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if exporter:
         try:
             await exporter.async_stop()
-        except Exception as err:
-            _LOGGER.debug(
-                "OpenIOTAI MQTT stop failed (ignored, entry_id=%s): %s",
-                entry_id,
-                err,
-            )
+        except Exception:
+            pass
 
     hass.data[DOMAIN]["coordinators"].pop(entry_id, None)
 
