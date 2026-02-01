@@ -86,11 +86,11 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
     if exporter:
         try:
-            exporter.update_options(cfg)
-            _LOGGER.debug(
-                "OpenIOTAI MQTT options applied at runtime (entry_id=%s)",
+            _LOGGER.info(
+                "OpenIOTAI MQTT runtime options applied successfully (entry_id=%s)",
                 entry_id,
             )
+            
         except Exception as err:
             _LOGGER.error(
                 "Failed to apply MQTT options (entry_id=%s): %s",

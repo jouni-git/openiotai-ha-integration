@@ -73,7 +73,7 @@ async def async_setup_entry(
     # Register coordinator for runtime access (CRITICAL)
     hass.data[DOMAIN]["coordinators"][entry_id] = coordinator
 
-    _LOGGER.debug(
+    _LOGGER.info(
         "OpenIOTAI coordinator registered (entry_id=%s)",
         entry_id,
     )

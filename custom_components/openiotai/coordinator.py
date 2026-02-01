@@ -35,6 +35,9 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
             update_interval=update_interval,
         )
 
+
+        self._first_poll_logged = False  # 👈 uusi lippu
+        
         _LOGGER.info(
             "OpenIOTAI DataUpdateCoordinator initialized (interval=%ss)",
             update_interval.total_seconds(),
@@ -72,7 +75,6 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
     # Data collection
     # -----------------------------------------------------------------
     async def _async_update_data(self) -> Dict[str, Any]:
-        """Poll current Home Assistant states."""
         try:
             data: Dict[str, Any] = {}
 
@@ -91,6 +93,13 @@ class OpenIOTAIDataCoordinator(DataUpdateCoordinator[Dict[str, Any]]):
                         else None
                     ),
                 }
+
+            if not self._first_poll_logged:
+                _LOGGER.info(
+                    "OpenIOTAI initial polling successful (entities=%d)",
+                    len(data),
+                )
+                self._first_poll_logged = True
 
             _LOGGER.debug(
                 "OpenIOTAI polling completed: entities=%d (interval=%ss)",

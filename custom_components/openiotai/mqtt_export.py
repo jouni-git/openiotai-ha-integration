@@ -253,7 +253,7 @@ class OpenIOTAIMQTTExporter:
         self._stop_event.clear()
         self._loop = asyncio.get_running_loop()
         self._task = asyncio.create_task(self._run(), name="openiotai_mqtt_runtime")
-        _LOGGER.debug("OpenIOTAI MQTT runtime started")
+        _LOGGER.info("OpenIOTAI MQTT runtime started")
 
     async def async_stop(self) -> None:
         if not self._running:
@@ -269,7 +269,7 @@ class OpenIOTAIMQTTExporter:
                 pass
 
         await self._disconnect(hard=True)
-        _LOGGER.debug("OpenIOTAI MQTT runtime stopped")
+        _LOGGER.info("OpenIOTAI MQTT runtime stopped")
 
     async def _run(self) -> None:
         backoff = RECONNECT_INITIAL_SEC
@@ -297,7 +297,7 @@ class OpenIOTAIMQTTExporter:
             except (TlsError, CannotConnect) as err:
                 self.connected = False
                 self.last_error = str(err)
-                _LOGGER.debug("MQTT connect attempt failed: %s", err)
+                _LOGGER.info("MQTT connect attempt failed: %s", err)
                 await self._disconnect(hard=True)
                 await self._wait_stop_or_reconnect(timeout=backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX_SEC)
@@ -305,7 +305,12 @@ class OpenIOTAIMQTTExporter:
             except Exception as err:
                 self.connected = False
                 self.last_error = str(err)
-                _LOGGER.debug("MQTT runtime error (will retry): %s", err)
+                if not self._reported_runtime_error:
+                    _LOGGER.info("MQTT runtime error, retrying: %s", err)
+                    self._reported_runtime_error = True
+                else:
+                    _LOGGER.debug("MQTT runtime error (will retry): %s", err)
+
                 await self._disconnect(hard=True)
                 await self._wait_stop_or_reconnect(timeout=backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX_SEC)
@@ -346,20 +351,29 @@ class OpenIOTAIMQTTExporter:
         except Exception:
             pass
 
-        def _on_connect(_client, _userdata, _flags, rc, _properties=None):
-            self._conn_rc = rc
-            self.connected = rc == 0
-            self.last_error = None if rc == 0 else f"connack rc={rc}"
 
-            if rc == 0:
-                _LOGGER.info("MQTT connected (rc=%s)", rc)
-            elif rc in (4, 5):
-                _LOGGER.info("MQTT connect rejected (auth) (rc=%s)", rc)
-            else:
-                _LOGGER.info("MQTT connect rejected (rc=%s)", rc)
+    def _on_connect(_client, _userdata, _flags, rc, _properties=None):
+        self._conn_rc = rc
 
-            if self._conn_event and self._loop:
-                self._loop.call_soon_threadsafe(self._conn_event.set)
+        if rc == 0:
+            self.connected = True
+            self.last_error = None
+            self._reported_runtime_error = False
+            _LOGGER.info("MQTT connected (rc=%s)", rc)
+
+        elif rc in (4, 5):
+            self.connected = False
+            self.last_error = f"connack rc={rc}"
+            _LOGGER.info("MQTT connect rejected (auth) (rc=%s)", rc)
+
+        else:
+            self.connected = False
+            self.last_error = f"connack rc={rc}"
+            _LOGGER.info("MQTT connect rejected (rc=%s)", rc)
+
+        if self._conn_event and self._loop:
+            self._loop.call_soon_threadsafe(self._conn_event.set)
+
 
         def _on_disconnect(_client, _userdata, rc, _properties=None):
             # Paho uses rc=0 for clean disconnect; nonzero means unexpected (network)

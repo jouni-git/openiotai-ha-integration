@@ -96,6 +96,10 @@ class OpenIOTAIOptionsFlow(config_entries.OptionsFlow):
                 errors[CONF_PUBLISH_INTERVAL] = "invalid_publish_interval"
 
             if not errors:
+                _LOGGER.info(
+                    "OpenIOTAI options saved via UI (entry_id=%s)",
+                    self._entry.entry_id,
+                )
                 return self.async_create_entry(
                     title="",
                     data=user_input,
