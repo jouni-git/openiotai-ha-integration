@@ -397,12 +397,16 @@ class OpenIOTAIMQTTExporter:
         self._loop_started = False
         _LOGGER.debug("MQTT client created")
 
+
     async def _ensure_tls(self) -> None:
         """Configure TLS context once per client."""
         if not self._conn_cfg.use_tls or self._tls_configured:
             return
 
-        assert self._client is not None
+        if self._client is None:
+            raise CannotConnect(
+                f"MQTT client missing before TLS setup (broker={self._conn_cfg.broker}:{self._conn_cfg.port})"
+            )
 
         loop = asyncio.get_running_loop()
 
@@ -419,6 +423,9 @@ class OpenIOTAIMQTTExporter:
             _LOGGER.info("MQTT TLS configured")
         except Exception as exc:
             raise TlsError(str(exc)) from exc
+
+
+
 
     async def _connect(self) -> None:
         """Connect using connect_async + loop_start, then wait for CONNACK."""
