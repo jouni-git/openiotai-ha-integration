@@ -252,8 +252,14 @@ class OpenIOTAIMQTTExporter:
         self._running = True
         self._stop_event.clear()
         self._loop = asyncio.get_running_loop()
+
+        # 🔥 FORCE initial connect
+        self._reconnect_event.set()
+
         self._task = asyncio.create_task(self._run(), name="openiotai_mqtt_runtime")
         _LOGGER.info("OpenIOTAI MQTT runtime started")
+
+
 
     async def async_stop(self) -> None:
         if not self._running:
