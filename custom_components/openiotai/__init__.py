@@ -180,9 +180,15 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
 # ---------------------------------------------------------------------
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OpenIOTAI from a config entry."""
-    _LOGGER.info("Setting up OpenIOTAI (entry_id=%s)", entry.entry_id)
 
-    # Merge data + options (options override)
+    entry_id = entry.entry_id
+    _LOGGER.info("Setting up OpenIOTAI (entry_id=%s)", entry_id)
+
+    # Ensure base storage
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN].setdefault("coordinators", {})
+
+    # Merge config entry data + options (options override)
     cfg = {**entry.data, **entry.options}
 
     required = (
@@ -191,39 +197,59 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         CONF_MQTT_TOPIC,
     )
 
-    if not all(k in cfg for k in required):
+    exporter: OpenIOTAIMQTTExporter | None = None
+
+    # ------------------------------------------------------------
+    # 1. Create AND START MQTT exporter synchronously (CRITICAL)
+    # ------------------------------------------------------------
+    if all(k in cfg for k in required):
+        _LOGGER.info(
+            "OpenIOTAI MQTT configuration complete – initializing exporter (entry_id=%s)",
+            entry_id,
+        )
+
+        exporter = OpenIOTAIMQTTExporter(
+            broker=cfg[CONF_MQTT_BROKER],
+            port=cfg[CONF_MQTT_PORT],
+            topic=cfg[CONF_MQTT_TOPIC],
+            use_tls=cfg.get(CONF_MQTT_TLS, False),
+            ca_cert=cfg.get(CONF_MQTT_CA_CERT),
+            username=cfg.get(CONF_MQTT_USERNAME),
+            password=cfg.get(CONF_MQTT_PASSWORD),
+            client_id=f"openiotai-{entry_id}",
+        )
+
+        # 🔒 Store exporter BEFORE any platform is forwarded
+        hass.data[DOMAIN][entry_id] = exporter
+
+        # 🔥 IMPORTANT: await start – no fire-and-forget
+        await exporter.async_start()
+
+    else:
         _LOGGER.info(
             "OpenIOTAI MQTT not started yet – configuration incomplete "
-            "(configure options to enable MQTT)"
+            "(configure options to enable MQTT, entry_id=%s)",
+            entry_id,
         )
-        # Still forward platforms (coordinator works without MQTT)
-        await hass.config_entries.async_forward_entry_setups(
-            entry,
-            PLATFORMS,
-        )
-        return True
 
-    exporter = OpenIOTAIMQTTExporter(
-        broker=cfg[CONF_MQTT_BROKER],
-        port=cfg[CONF_MQTT_PORT],
-        topic=cfg[CONF_MQTT_TOPIC],
-        use_tls=cfg.get(CONF_MQTT_TLS, False),
-        ca_cert=cfg.get(CONF_MQTT_CA_CERT),
-        username=cfg.get(CONF_MQTT_USERNAME),
-        password=cfg.get(CONF_MQTT_PASSWORD),
-        client_id=f"openiotai-{entry.entry_id}",
-    )
-
-    hass.data[DOMAIN][entry.entry_id] = exporter
-    hass.async_create_task(exporter.async_start())
-
+    # ------------------------------------------------------------
+    # 2. Register options update listener
+    # ------------------------------------------------------------
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
 
+    # ------------------------------------------------------------
+    # 3. Forward platforms ONLY after exporter is ready
+    # ------------------------------------------------------------
     await hass.config_entries.async_forward_entry_setups(
         entry,
         PLATFORMS,
+    )
+
+    _LOGGER.info(
+        "OpenIOTAI setup completed successfully (entry_id=%s)",
+        entry_id,
     )
 
     return True
