@@ -379,15 +379,15 @@ class OpenIOTAIMQTTExporter:
             self._loop.call_soon_threadsafe(self._conn_event.set)
 
 
+
         def _on_disconnect(_client, _userdata, rc, _properties=None):
-            # Paho uses rc=0 for clean disconnect; nonzero means unexpected (network)
             self.connected = False
             _LOGGER.info("MQTT disconnected (rc=%s)", rc)
 
-            # If disconnect was unexpected, request a reconnect.
-            # (Do NOT reconnect here; just signal the runtime loop.)
-            if rc != 0 and self._loop:
+            # 🔥 ÄLÄ laukaise reconnectiä, jos disconnect oli tahallinen
+            if rc != 0 and not self._intentional_disconnect and self._loop:
                 self._loop.call_soon_threadsafe(self._reconnect_event.set)
+
 
         client.on_connect = _on_connect
         client.on_disconnect = _on_disconnect
