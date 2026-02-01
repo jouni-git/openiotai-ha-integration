@@ -42,29 +42,44 @@ class OpenIOTAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1  # no migrations
 
+
     async def async_step_user(self, user_input=None) -> FlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="OpenIOTAI", data={})
+        """Create config entry immediately.
+
+        OpenIOTAI does not require any setup parameters during installation.
+        All configuration is handled via the Options flow.
+        """
+        return self.async_create_entry(
+            title="OpenIOTAI",
+            data={},
+        )
+
+
+    async def async_step_user_OLD(self, user_input=None) -> FlowResult:
+        """Handle initial setup."""
+
+#        if user_input is not None:
+#            return self.async_create_entry(title="OpenIOTAI", data={})
+
+##        return self.async_show_form(
+##            step_id="user",
+##            data_schema=vol.Schema({}),
+##        )
 
 #        return self.async_show_form(
 #            step_id="user",
 #            data_schema=vol.Schema({}),
+#            description_placeholders={
+#                "info": (
+#                    "This integration exports Home Assistant entity data to the "
+#                    "OpenIOTAI service.\n\n"
+#                    "No settings are required at this stage.\n\n"
+#                    "Connection and publishing options can be configured later "
+#                    "via the integration options."
+#                )
+#            },
 #        )
-
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema({}),
-            description_placeholders={
-                "info": (
-                    "This integration exports Home Assistant entity data to the "
-                    "OpenIOTAI service.\n\n"
-                    "No settings are required at this stage.\n\n"
-                    "Connection and publishing options can be configured later "
-                    "via the integration options."
-                )
-            },
-        )
-
+#
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry):
