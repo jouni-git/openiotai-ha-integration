@@ -537,18 +537,24 @@ class OpenIOTAIMQTTExporter:
 
 
     async def _ensure_connected(self) -> None:
-        """Ensure MQTT client is connected. Always attempts connect if not connected."""
+        """Ensure MQTT client is fully connected (client → TLS → connect)."""
         async with self._lock:
-            # Always (re)create client if missing
+
+            # 1️⃣ Ensure client exists FIRST
             if self._client is None:
+                _LOGGER.info(
+                    "Creating MQTT client (broker=%s:%s)",
+                    self._conn_cfg.broker,
+                    self._conn_cfg.port,
+                )
                 self._ensure_client()
                 self._tls_configured = False
                 self._loop_started = False
 
-            # Ensure TLS is configured before connect
+            # 2️⃣ Configure TLS only AFTER client exists
             await self._ensure_tls()
 
-            # Always attempt connect if not connected
+            # 3️⃣ Attempt connect if not connected
             if not self.connected:
                 await self._connect()
 
