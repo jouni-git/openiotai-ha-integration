@@ -398,31 +398,90 @@ class OpenIOTAIMQTTExporter:
         _LOGGER.debug("MQTT client created")
 
 
+
     async def _ensure_tls(self) -> None:
-        """Configure TLS context once per client."""
-        if not self._conn_cfg.use_tls or self._tls_configured:
+        """Ensure TLS is configured for the current MQTT client.
+
+        This is called during connect / reconnect and must be safe to call multiple times.
+        """
+        # TLS not in use → nothing to do
+        if not self._conn_cfg.use_tls:
+            _LOGGER.debug(
+                "MQTT TLS not enabled (broker=%s:%s)",
+                self._conn_cfg.broker,
+                self._conn_cfg.port,
+            )
             return
 
-        if self._client is None:
-            raise CannotConnect(
-                f"MQTT client missing before TLS setup (broker={self._conn_cfg.broker}:{self._conn_cfg.port})"
+        # Already configured for this client
+        if self._tls_configured:
+            _LOGGER.debug(
+                "MQTT TLS already configured (broker=%s:%s)",
+                self._conn_cfg.broker,
+                self._conn_cfg.port,
             )
+            return
+
+        # Client must exist before TLS setup
+        if self._client is None:
+            msg = (
+                f"MQTT client missing before TLS setup "
+                f"(broker={self._conn_cfg.broker}:{self._conn_cfg.port})"
+            )
+            _LOGGER.warning(msg)
+            raise CannotConnect(msg)
+
+        _LOGGER.info(
+            "Configuring MQTT TLS (broker=%s:%s, cafile=%s)",
+            self._conn_cfg.broker,
+            self._conn_cfg.port,
+            self._conn_cfg.ca_cert or "<system>",
+        )
 
         loop = asyncio.get_running_loop()
 
         def _build_context() -> ssl.SSLContext:
-            ctx = ssl.create_default_context(cafile=self._conn_cfg.ca_cert if self._conn_cfg.ca_cert else None)
+            ctx = ssl.create_default_context(
+                cafile=self._conn_cfg.ca_cert if self._conn_cfg.ca_cert else None
+            )
             ctx.check_hostname = True
             ctx.verify_mode = ssl.CERT_REQUIRED
             return ctx
 
         try:
+            # Build SSL context off the event loop
             context = await loop.run_in_executor(None, _build_context)
+
+            # Apply TLS context to MQTT client
             self._client.tls_set_context(context)
+
             self._tls_configured = True
-            _LOGGER.info("MQTT TLS configured")
-        except Exception as exc:
+
+            _LOGGER.info(
+                "MQTT TLS configured successfully (broker=%s:%s)",
+                self._conn_cfg.broker,
+                self._conn_cfg.port,
+            )
+
+        except ssl.SSLError as exc:
+            _LOGGER.error(
+                "MQTT TLS SSL error (broker=%s:%s): %s",
+                self._conn_cfg.broker,
+                self._conn_cfg.port,
+                exc,
+            )
             raise TlsError(str(exc)) from exc
+
+        except Exception as exc:
+            _LOGGER.error(
+                "MQTT TLS setup failed (broker=%s:%s): %s",
+                self._conn_cfg.broker,
+                self._conn_cfg.port,
+                exc,
+            )
+            raise TlsError(str(exc)) from exc
+
+
 
 
 
