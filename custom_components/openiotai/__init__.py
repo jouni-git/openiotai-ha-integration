@@ -6,6 +6,7 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     DOMAIN,
@@ -41,10 +42,10 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 # ---------------------------------------------------------------------
 SENSITIVE_KEYS = {
     CONF_MQTT_PASSWORD,
+    CONF_MQTT_CA_CERT,
     "password",
     "token",
     "api_key",
-    CONF_MQTT_CA_CERT,
 }
 
 
@@ -59,8 +60,6 @@ def _sanitize_cfg(cfg: dict) -> dict:
 async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Apply updated options at runtime without reloading the integration."""
     entry_id = entry.entry_id
-
-    # Merge config entry data + options (options override data)
     cfg = {**entry.data, **entry.options}
 
     _LOGGER.info(
@@ -183,7 +182,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cfg = {**entry.data, **entry.options}
 
     # ------------------------------------------------------------
-    # 1. Create MQTT exporter if configuration is complete
+    # 1. Register virtual device (CRITICAL for Device info)
+    # ------------------------------------------------------------
+    device_registry = dr.async_get(hass)
+
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry_id,
+        identifiers={(DOMAIN, entry_id)},
+        name="OpenIOTAI",
+        manufacturer="OpenIOTAI",
+        model="MQTT Exporter",
+        entry_type=dr.DeviceEntryType.SERVICE,
+    )
+
+    _LOGGER.debug(
+        "OpenIOTAI device registered (device_id=%s, entry_id=%s)",
+        device.id,
+        entry_id,
+    )
+
+    # ------------------------------------------------------------
+    # 2. Create MQTT exporter if configuration is complete
     # ------------------------------------------------------------
     mqtt_required = (
         CONF_MQTT_BROKER,
@@ -217,14 +236,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     # ------------------------------------------------------------
-    # 2. Register options update listener
+    # 3. Register options update listener
     # ------------------------------------------------------------
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
 
     # ------------------------------------------------------------
-    # 3. Forward platforms
+    # 4. Forward platforms
     # ------------------------------------------------------------
     await hass.config_entries.async_forward_entry_setups(
         entry,
