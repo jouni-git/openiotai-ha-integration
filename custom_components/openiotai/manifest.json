@@ -6,5 +6,6 @@
   "codeowners": ["@jouni-git"],
   "iot_class": "local_polling",
   "config_flow": true,
-  "platforms": ["sensor"]
+  "platforms": ["sensor"],
+  "translation_key": "openiotai"
 }
