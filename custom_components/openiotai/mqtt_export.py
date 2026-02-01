@@ -12,7 +12,6 @@ Notes about stability:
 - publish_* never calls disconnect() directly. It only requests a reconnect.
 - update_options never disconnects immediately. It only requests a reconnect.
 - loop_start/loop_stop are managed centrally; we never call loop_start twice without a loop_stop.
-
 """
 
 from __future__ import annotations
@@ -23,9 +22,20 @@ import logging
 import ssl
 from dataclasses import dataclass, replace
 from datetime import date, datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set
 
 import paho.mqtt.client as mqtt
+
+from .const import (
+    CONF_MQTT_BROKER,
+    CONF_MQTT_PORT,
+    CONF_MQTT_TOPIC,
+    CONF_MQTT_TLS,
+    CONF_MQTT_CA_CERT,
+    CONF_MQTT_USERNAME,
+    CONF_MQTT_PASSWORD,
+    CONF_PUBLISH_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +45,9 @@ DEFAULT_KEEPALIVE_SEC = 30
 
 RECONNECT_INITIAL_SEC = 2
 RECONNECT_MAX_SEC = 60
+
+# If you don't have this in const.py, keep it here.
+CONF_DELTA_PUBLISH = "delta_publish"
 
 
 # ---------------------------------------------------------------------
@@ -93,9 +106,6 @@ class _ConnConfig:
     keepalive: int
 
 
-# ---------------------------------------------------------------------
-# Exporter
-# ---------------------------------------------------------------------
 class OpenIOTAIMQTTExporter:
     """Exports OpenIOTAI snapshots to MQTT (TLS supported)."""
 
@@ -114,8 +124,6 @@ class OpenIOTAIMQTTExporter:
         connect_timeout: int = DEFAULT_CONNECT_TIMEOUT_SEC,
         publish_timeout: int = DEFAULT_PUBLISH_TIMEOUT_SEC,
         publish_interval: int | None = None,
-        # If True, publish_snapshot() will publish ONLY changes since last successful publish.
-        # If False, publish_snapshot() publishes full snapshot.
         delta_publish: bool = True,
     ) -> None:
         # Public runtime state (diagnostics)
@@ -152,7 +160,7 @@ class OpenIOTAIMQTTExporter:
         self._task: Optional[asyncio.Task] = None
         self._running: bool = False
 
-        # Paho callbacks run in Paho network thread
+        # Paho callbacks run in Paho network thread; loop is HA event loop
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._conn_event: Optional[asyncio.Event] = None
         self._conn_rc: Optional[int] = None
@@ -160,8 +168,12 @@ class OpenIOTAIMQTTExporter:
         # Reconnect request flag
         self._reconnect_event = asyncio.Event()
 
+        # Flags for clean behavior
+        self._intentional_disconnect: bool = False
+        self._reported_runtime_error: bool = False
+
         # Delta tracking (only updated after successful publish)
-        self._last_sent_map: Dict[str, str] = {}  # key -> stable-json of that key's payload
+        self._last_sent_map: Dict[str, str] = {}  # entity_id -> stable-json
 
         _LOGGER.info(
             "MQTT exporter initialized (broker=%s:%s, tls=%s, topic=%s, client_id=%s, delta=%s)",
@@ -177,29 +189,22 @@ class OpenIOTAIMQTTExporter:
     # Options update (called from HA event loop)
     # ------------------------------------------------------------------
     def update_options(self, options: Dict[str, Any]) -> None:
-        """Apply updated options without reloading the integration.
-
-        Rules:
-        - Topic / publish_interval / delta_publish changes do NOT require reconnect.
-        - Broker/port/TLS/auth changes DO require reconnect.
-        - We do NOT disconnect here; we only request reconnect and let _run() handle it.
-        """
-        # Allow both "const-like" keys and your earlier literal keys
+        """Apply updated options without reloading the integration."""
         def _get(*keys: str) -> Any:
             for k in keys:
                 if k in options:
                     return options.get(k)
             return None
 
-        broker = _get("mqtt_broker")
-        port = _get("mqtt_port")
-        topic = _get("mqtt_topic")
-        use_tls = _get("mqtt_tls")
-        ca_cert = _get("mqtt_ca_cert")
-        username = _get("mqtt_username")
-        password = _get("mqtt_password")
-        publish_interval = _get("publish_interval")
-        delta_publish = _get("delta_publish")
+        broker = _get(CONF_MQTT_BROKER)
+        port = _get(CONF_MQTT_PORT)
+        topic = _get(CONF_MQTT_TOPIC)
+        use_tls = _get(CONF_MQTT_TLS)
+        ca_cert = _get(CONF_MQTT_CA_CERT)
+        username = _get(CONF_MQTT_USERNAME)
+        password = _get(CONF_MQTT_PASSWORD)
+        publish_interval = _get(CONF_PUBLISH_INTERVAL)
+        delta_publish = _get(CONF_DELTA_PUBLISH)
 
         # Non-connection changes
         if topic is not None and str(topic) != self._topic:
@@ -213,18 +218,17 @@ class OpenIOTAIMQTTExporter:
                     self._publish_interval = pi
                     _LOGGER.debug("Publish interval updated (sec=%s)", pi)
             except Exception:
-                pass
+                _LOGGER.debug("Invalid publish_interval ignored")
 
         if delta_publish is not None:
             try:
                 dp = bool(delta_publish)
                 if dp != self._delta_publish:
                     self._delta_publish = dp
-                    # Reset delta state when switching modes
                     self._last_sent_map.clear()
                     _LOGGER.info("Delta publish updated (enabled=%s)", self._delta_publish)
             except Exception:
-                pass
+                _LOGGER.debug("Invalid delta_publish ignored")
 
         # Connection-affecting changes -> request reconnect
         new_cfg = replace(
@@ -239,7 +243,7 @@ class OpenIOTAIMQTTExporter:
 
         if new_cfg != self._conn_cfg:
             self._conn_cfg = new_cfg
-            self._tls_configured = False  # TLS context must be rebuilt
+            self._tls_configured = False
             self._reconnect_event.set()
             _LOGGER.info("Connection options changed -> reconnect requested")
 
@@ -253,13 +257,11 @@ class OpenIOTAIMQTTExporter:
         self._stop_event.clear()
         self._loop = asyncio.get_running_loop()
 
-        # 🔥 FORCE initial connect
+        # Force initial connect
         self._reconnect_event.set()
 
         self._task = asyncio.create_task(self._run(), name="openiotai_mqtt_runtime")
         _LOGGER.info("OpenIOTAI MQTT runtime started")
-
-
 
     async def async_stop(self) -> None:
         if not self._running:
@@ -282,16 +284,13 @@ class OpenIOTAIMQTTExporter:
 
         while not self._stop_event.is_set():
             try:
-                # If reconnect requested, force hard disconnect
                 if self._reconnect_event.is_set():
                     self._reconnect_event.clear()
                     await self._disconnect(hard=True)
 
-                # 🔥 ALWAYS try to ensure connection
                 await self._ensure_connected()
                 backoff = RECONNECT_INITIAL_SEC
 
-                # Wait until stop or reconnect requested
                 await self._wait_stop_or_reconnect(timeout=30)
 
             except InvalidAuth as err:
@@ -317,8 +316,6 @@ class OpenIOTAIMQTTExporter:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX_SEC)
 
-
-
     async def _wait_stop_or_reconnect(self, timeout: int) -> None:
         """Wait until stop event, reconnect request, or timeout."""
         stop_task = asyncio.create_task(self._stop_event.wait())
@@ -331,7 +328,7 @@ class OpenIOTAIMQTTExporter:
             )
             for t in pending:
                 t.cancel()
-        except Exception:
+        finally:
             stop_task.cancel()
             reco_task.cancel()
 
@@ -339,106 +336,49 @@ class OpenIOTAIMQTTExporter:
     # Connection helpers
     # ------------------------------------------------------------------
     def _ensure_client(self) -> None:
-        """Create and configure the Paho client if missing.
-
-        Must ALWAYS set self._client when it returns successfully.
-        """
+        """Create and configure the Paho client if missing."""
         if self._client is not None:
-            _LOGGER.debug("MQTT client already exists (client_id=%s)", self._conn_cfg.client_id)
             return
 
-        _LOGGER.info(
-            "Creating MQTT client (broker=%s:%s, client_id=%s)",
-            self._conn_cfg.broker,
-            self._conn_cfg.port,
-            self._conn_cfg.client_id,
+        # Use Callback API v1 to keep legacy callback signatures stable.
+        # Paho supports this explicitly. :contentReference[oaicite:2]{index=2}
+        client = mqtt.Client(
+            client_id=self._conn_cfg.client_id,
+            protocol=mqtt.MQTTv311,
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
         )
 
+        if self._conn_cfg.username:
+            client.username_pw_set(self._conn_cfg.username, self._conn_cfg.password)
+
         try:
-            client = mqtt.Client(client_id=self._conn_cfg.client_id, protocol=mqtt.MQTTv311)
+            client.reconnect_delay_set(min_delay=1, max_delay=1)
+        except Exception:
+            pass
 
-            if self._conn_cfg.username:
-                client.username_pw_set(self._conn_cfg.username, self._conn_cfg.password)
+        def _on_connect(_client, _userdata, _flags, rc) -> None:
+            self._conn_rc = int(rc)
+            self.connected = (rc == 0)
+            self.last_error = None if rc == 0 else f"connack rc={rc}"
 
-            try:
-                client.reconnect_delay_set(min_delay=1, max_delay=1)
-            except Exception:
-                pass
+            if rc == 0:
+                self._reported_runtime_error = False
+                _LOGGER.info("MQTT connected (rc=%s)", rc)
+            elif rc in (4, 5):
+                _LOGGER.info("MQTT connect rejected (auth) (rc=%s)", rc)
+            else:
+                _LOGGER.info("MQTT connect rejected (rc=%s)", rc)
 
-            def _on_connect(_client, _userdata, _flags, rc, _properties=None):
-                self._conn_rc = rc
-                self.connected = (rc == 0)
-                self.last_error = None if rc == 0 else f"connack rc={rc}"
+            if self._conn_event and self._loop:
+                self._loop.call_soon_threadsafe(self._conn_event.set)
 
-                if rc == 0:
-                    self._reported_runtime_error = False
-                    _LOGGER.info("MQTT connected (rc=%s)", rc)
-                elif rc in (4, 5):
-                    _LOGGER.info("MQTT connect rejected (auth) (rc=%s)", rc)
-                else:
-                    _LOGGER.info("MQTT connect rejected (rc=%s)", rc)
-
-                if self._conn_event and self._loop:
-                    self._loop.call_soon_threadsafe(self._conn_event.set)
-
-            def _on_disconnect(_client, _userdata, rc, _properties=None):
-                self.connected = False
-                _LOGGER.info("MQTT disconnected (rc=%s)", rc)
-
-                if rc != 0 and self._loop and not getattr(self, "_intentional_disconnect", False):
-                    self._loop.call_soon_threadsafe(self._reconnect_event.set)
-
-            client.on_connect = _on_connect
-            client.on_disconnect = _on_disconnect
-
-            # ✅ The ONE source of truth:
-            self._client = client
-            self._tls_configured = False
-            self._loop_started = False
-
-            _LOGGER.info("MQTT client created successfully (has_client=%s)", self._client is not None)
-
-        except Exception as exc:
-            # Ensure we do NOT leave half-initialized state behind
-            self._client = None
-            self._tls_configured = False
-            self._loop_started = False
-            _LOGGER.error("MQTT client creation failed: %s", exc)
-            raise
-
-
-    def _on_connect(_client, _userdata, _flags, rc, _properties=None):
-        self._conn_rc = rc
-
-        if rc == 0:
-            self.connected = True
-            self.last_error = None
-            self._reported_runtime_error = False
-            _LOGGER.info("MQTT connected (rc=%s)", rc)
-
-        elif rc in (4, 5):
-            self.connected = False
-            self.last_error = f"connack rc={rc}"
-            _LOGGER.info("MQTT connect rejected (auth) (rc=%s)", rc)
-
-        else:
-            self.connected = False
-            self.last_error = f"connack rc={rc}"
-            _LOGGER.info("MQTT connect rejected (rc=%s)", rc)
-
-        if self._conn_event and self._loop:
-            self._loop.call_soon_threadsafe(self._conn_event.set)
-
-
-
-        def _on_disconnect(_client, _userdata, rc, _properties=None):
+        def _on_disconnect(_client, _userdata, rc) -> None:
             self.connected = False
             _LOGGER.info("MQTT disconnected (rc=%s)", rc)
 
-            # 🔥 ÄLÄ laukaise reconnectiä, jos disconnect oli tahallinen
-            if rc != 0 and not self._intentional_disconnect and self._loop:
+            # Reconnect only for unintentional disconnects.
+            if rc != 0 and self._loop and not self._intentional_disconnect:
                 self._loop.call_soon_threadsafe(self._reconnect_event.set)
-
 
         client.on_connect = _on_connect
         client.on_disconnect = _on_disconnect
@@ -446,39 +386,19 @@ class OpenIOTAIMQTTExporter:
         self._client = client
         self._tls_configured = False
         self._loop_started = False
-        _LOGGER.debug("MQTT client created")
 
-
+        _LOGGER.info("MQTT client created (client_id=%s)", self._conn_cfg.client_id)
 
     async def _ensure_tls(self) -> None:
-        """Ensure TLS is configured for the current MQTT client.
-
-        This is called during connect / reconnect and must be safe to call multiple times.
-        """
-        # TLS not in use → nothing to do
+        """Ensure TLS is configured for the current MQTT client."""
         if not self._conn_cfg.use_tls:
-            _LOGGER.debug(
-                "MQTT TLS not enabled (broker=%s:%s)",
-                self._conn_cfg.broker,
-                self._conn_cfg.port,
-            )
             return
 
-        # Already configured for this client
         if self._tls_configured:
-            _LOGGER.debug(
-                "MQTT TLS already configured (broker=%s:%s)",
-                self._conn_cfg.broker,
-                self._conn_cfg.port,
-            )
             return
 
-        # Client must exist before TLS setup
         if self._client is None:
-            msg = (
-                f"MQTT client missing before TLS setup "
-                f"(broker={self._conn_cfg.broker}:{self._conn_cfg.port})"
-            )
+            msg = f"MQTT client missing before TLS setup (broker={self._conn_cfg.broker}:{self._conn_cfg.port})"
             _LOGGER.warning(msg)
             raise CannotConnect(msg)
 
@@ -500,42 +420,14 @@ class OpenIOTAIMQTTExporter:
             return ctx
 
         try:
-            # Build SSL context off the event loop
             context = await loop.run_in_executor(None, _build_context)
-
-            # Apply TLS context to MQTT client
             self._client.tls_set_context(context)
-
             self._tls_configured = True
-
-            _LOGGER.info(
-                "MQTT TLS configured successfully (broker=%s:%s)",
-                self._conn_cfg.broker,
-                self._conn_cfg.port,
-            )
-
+            _LOGGER.info("MQTT TLS configured successfully")
         except ssl.SSLError as exc:
-            _LOGGER.error(
-                "MQTT TLS SSL error (broker=%s:%s): %s",
-                self._conn_cfg.broker,
-                self._conn_cfg.port,
-                exc,
-            )
             raise TlsError(str(exc)) from exc
-
         except Exception as exc:
-            _LOGGER.error(
-                "MQTT TLS setup failed (broker=%s:%s): %s",
-                self._conn_cfg.broker,
-                self._conn_cfg.port,
-                exc,
-            )
             raise TlsError(str(exc)) from exc
-
-
-
-
-
 
     async def _connect(self) -> None:
         """Connect using connect_async + loop_start, then wait for CONNACK."""
@@ -556,12 +448,10 @@ class OpenIOTAIMQTTExporter:
         )
 
         try:
-            # Start network loop exactly once per client lifetime
             if not self._loop_started:
                 self._client.loop_start()
                 self._loop_started = True
 
-            # Non-blocking connect; handshake happens in Paho network thread
             self._client.connect_async(
                 self._conn_cfg.broker,
                 self._conn_cfg.port,
@@ -586,38 +476,22 @@ class OpenIOTAIMQTTExporter:
             raise InvalidAuth(f"connack rc={rc}")
         raise CannotConnect(f"connack rc={rc}")
 
-
     async def _ensure_connected(self) -> None:
-        """Ensure MQTT client is fully connected (client → TLS → connect)."""
+        """Ensure MQTT client is fully connected (client -> TLS -> connect)."""
         async with self._lock:
             if self._client is None:
                 self._ensure_client()
 
-            # 🔥 Hard guarantee (if this triggers, something is overwriting self._client)
             if self._client is None:
-                raise CannotConnect(
-                    f"_ensure_client() returned but self._client is still None "
-                    f"(broker={self._conn_cfg.broker}:{self._conn_cfg.port})"
-                )
+                raise CannotConnect("client creation failed")
 
             await self._ensure_tls()
 
             if not self.connected:
                 await self._connect()
 
-
-
-
     async def _disconnect(self, *, hard: bool) -> None:
-        """Disconnect and stop network loop safely.
-
-        hard=True:
-          - fully stop loop thread and drop client
-          - used for reconnect-after-options-change or unrecoverable errors
-
-        hard=False:
-          - request disconnect but keep client instance
-        """
+        """Disconnect and stop network loop safely."""
         client = self._client
         if not client:
             self.connected = False
@@ -626,16 +500,18 @@ class OpenIOTAIMQTTExporter:
         loop = asyncio.get_running_loop()
 
         def _do() -> None:
+            # Mark intentional disconnect to avoid reconnect trigger from callback.
+            self._intentional_disconnect = True
             try:
                 client.disconnect()
             except Exception:
                 pass
-            # Stop the network thread only on hard disconnect.
             if hard:
                 try:
                     client.loop_stop()
                 except Exception:
                     pass
+            self._intentional_disconnect = False
 
         await loop.run_in_executor(None, _do)
         self.connected = False
@@ -645,33 +521,26 @@ class OpenIOTAIMQTTExporter:
             self._tls_configured = False
             self._loop_started = False
 
-
-
-    def _compute_delta_entities(self, snapshot: Dict[str, Any]) -> set[str]:
-        """Return a set of entity_ids whose payload has changed since last publish.
-
-        Uses stable JSON comparison per entity.
-        Does NOT mutate internal state.
-        """
+    # ------------------------------------------------------------------
+    # Delta publish helpers
+    # ------------------------------------------------------------------
+    def _compute_delta_entities(self, snapshot: Dict[str, Any]) -> Set[str]:
+        """Return entity_ids whose payload changed since last successful publish."""
         if not snapshot:
             return set()
 
-        changed: set[str] = set()
+        changed: Set[str] = set()
 
-        # Changed / new entities
         for entity_id, value in snapshot.items():
             key = str(entity_id)
             value_json = _stable_json(value)
             if self._last_sent_map.get(key) != value_json:
                 changed.add(key)
 
-        # Removed entities → publish tombstone (value=None)
         removed = set(self._last_sent_map.keys()) - {str(k) for k in snapshot.keys()}
-        for key in removed:
-            changed.add(key)
+        changed.update(removed)
 
         return changed
-
 
     def _commit_entity_state(self, entity_id: str, value: Any) -> None:
         """Commit last sent state for a single entity after successful publish."""
@@ -680,27 +549,25 @@ class OpenIOTAIMQTTExporter:
         else:
             self._last_sent_map[entity_id] = _stable_json(value)
 
-
     def _build_entity_event(self, entity_id: str, state: Any) -> Dict[str, Any]:
         """Build a ha.entity.v1 event from raw HA state data."""
         now = datetime.utcnow().isoformat() + "Z"
 
-        attributes = {}
-        raw_state = None
+        attributes: Dict[str, Any] = {}
+        raw_state: Any = None
+        last_changed: Any = None
+        last_updated: Any = None
 
         if isinstance(state, dict):
             raw_state = state.get("state")
-            attributes = state.get("attributes", {})
+            attributes = state.get("attributes", {}) or {}
             last_changed = state.get("last_changed")
             last_updated = state.get("last_updated")
         else:
             raw_state = state
-            last_changed = None
-            last_updated = None
 
         numeric_value: Optional[float] = None
         is_numeric = False
-
         try:
             numeric_value = float(raw_state)
             is_numeric = True
@@ -715,54 +582,44 @@ class OpenIOTAIMQTTExporter:
             "domain": domain,
             "entity_id": entity_id,
             "event_type": "state_changed",
-
             "timestamps": {
                 "last_changed": last_changed,
                 "last_updated": last_updated,
                 "ingest_received": now,
             },
-
             "state": {
                 "raw": raw_state,
                 "numeric": is_numeric,
                 "value": numeric_value,
                 "is_null": raw_state is None,
             },
-
             "attributes": attributes,
         }
 
-
     async def publish_snapshot(self, snapshot: Dict[str, Any]) -> None:
-        """Publish entity events (one MQTT message per entity).
-
-        Snapshot is used only as input; it is never published as-is.
-        """
-        if not self.connected or not self._client or not snapshot:
+        """Publish entity events (one MQTT message per entity)."""
+        if not snapshot:
+            return
+        if not self.connected or not self._client:
             return
 
-        # Determine which entities to publish
         if self._delta_publish:
             entities = self._compute_delta_entities(snapshot)
             if not entities:
                 return
         else:
-            entities = set(snapshot.keys())
+            entities = {str(k) for k in snapshot.keys()}
 
         loop = asyncio.get_running_loop()
 
         for entity_id in entities:
-            value = snapshot.get(entity_id)  # may be None (tombstone)
+            value = snapshot.get(entity_id)
             event = self._build_entity_event(entity_id, value)
             payload = json.dumps(_json_safe(event), ensure_ascii=False, separators=(",", ":"))
 
             def _publish_blocking() -> None:
-                info = self._client.publish(
-                    self._topic,
-                    payload,
-                    qos=1,
-                    retain=False,
-                )
+                assert self._client is not None
+                info = self._client.publish(self._topic, payload, qos=1, retain=False)
                 info.wait_for_publish(timeout=self._publish_timeout)
                 if info.rc != mqtt.MQTT_ERR_SUCCESS:
                     raise RuntimeError(f"publish rc={info.rc}")
@@ -772,7 +629,7 @@ class OpenIOTAIMQTTExporter:
                     loop.run_in_executor(None, _publish_blocking),
                     timeout=self._publish_timeout + 2,
                 )
-                self._commit_entity_state(str(entity_id), value)
+                self._commit_entity_state(entity_id, value)
                 _LOGGER.debug("Published entity event (entity_id=%s)", entity_id)
 
             except Exception as exc:
