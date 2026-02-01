@@ -46,9 +46,23 @@ class OpenIOTAIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(title="OpenIOTAI", data={})
 
+#        return self.async_show_form(
+#            step_id="user",
+#            data_schema=vol.Schema({}),
+#        )
+
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({}),
+            description_placeholders={
+                "info": (
+                    "This integration exports Home Assistant entity data to the "
+                    "OpenIOTAI service.\n\n"
+                    "No settings are required at this stage.\n\n"
+                    "Connection and publishing options can be configured later "
+                    "via the integration options."
+                )
+            },
         )
 
     @staticmethod

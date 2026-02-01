@@ -2,6 +2,8 @@
   "config": {
     "step": {
       "user": {
+        "title": "OpenIOTAI Polling-Based Data Export",
+        "description": "{info}",
         "error": {
           "cannot_connect": "Unable to connect to the MQTT broker. Please check the server address, port, username, and password.",
           "invalid_auth": "Invalid username or password for the MQTT broker.",
@@ -26,6 +28,28 @@
   "options": {
     "step": {
       "init": {
+        "title": "OpenIOTAI – Settings",
+        "description": "Configure how Home Assistant publishes data to the OpenIOTAI service via MQTT.",
+        "data": {
+          "mqtt_broker": "MQTT broker address",
+          "mqtt_port": "MQTT port",
+          "mqtt_topic": "MQTT topic",
+          "mqtt_tls": "Use TLS encryption",
+          "mqtt_username": "MQTT username",
+          "mqtt_password": "MQTT password",
+          "mqtt_ca_cert": "CA certificate (optional)",
+          "publish_interval": "Publish interval (seconds)"
+        },
+        "data_description": {
+          "mqtt_broker": "Hostname or IP address of the MQTT broker that receives the exported data.",
+          "mqtt_port": "Network port of the MQTT broker. For secure TLS connections, port 8883 is commonly used.",
+          "mqtt_topic": "MQTT topic under which Home Assistant data is published to OpenIOTAI.",
+          "mqtt_tls": "Enable a secure TLS-encrypted connection to the MQTT broker.",
+          "mqtt_username": "Username used to authenticate with the MQTT broker.",
+          "mqtt_password": "Password for the MQTT user.",
+          "mqtt_ca_cert": "PEM-encoded CA certificate used to verify the broker's TLS certificate, if required.",
+          "publish_interval": "How often data is published to OpenIOTAI, in seconds."
+        },
         "error": {
           "cannot_connect": "Unable to connect to the MQTT broker. Please check the server address, port, username, and password.",
           "invalid_auth": "Invalid username or password for the MQTT broker.",
