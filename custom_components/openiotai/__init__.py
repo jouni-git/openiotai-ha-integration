@@ -65,7 +65,7 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     cfg = {**entry.data, **entry.options}
 
     # ------------------------------------------------------------
-    # Safe, minimal INFO log (production friendly)
+    # Log options update (safe)
     # ------------------------------------------------------------
     _LOGGER.info(
         "OpenIOTAI options updated (entry_id=%s): publish_interval=%ss",
@@ -73,7 +73,6 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
         cfg.get(CONF_PUBLISH_INTERVAL),
     )
 
-    # Optional DEBUG log with masked config (development only)
     _LOGGER.debug(
         "OpenIOTAI options full config (masked, entry_id=%s): %s",
         entry_id,
@@ -81,27 +80,54 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     )
 
     # ------------------------------------------------------------
-    # 1. Update MQTT exporter runtime options
+    # 1. Ensure MQTT exporter exists (create if needed)
     # ------------------------------------------------------------
     exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
-    if exporter:
-        try:
+
+    mqtt_required = (
+        CONF_MQTT_BROKER,
+        CONF_MQTT_PORT,
+        CONF_MQTT_TOPIC,
+    )
+
+    if not exporter:
+        if all(k in cfg for k in mqtt_required):
             _LOGGER.info(
-                "OpenIOTAI MQTT runtime options applied successfully (entry_id=%s)",
+                "OpenIOTAI MQTT configuration complete – creating exporter (entry_id=%s)",
                 entry_id,
             )
-            
+
+            exporter = OpenIOTAIMQTTExporter(
+                broker=cfg[CONF_MQTT_BROKER],
+                port=cfg[CONF_MQTT_PORT],
+                topic=cfg[CONF_MQTT_TOPIC],
+                use_tls=cfg.get(CONF_MQTT_TLS, False),
+                ca_cert=cfg.get(CONF_MQTT_CA_CERT),
+                username=cfg.get(CONF_MQTT_USERNAME),
+                password=cfg.get(CONF_MQTT_PASSWORD),
+                client_id=f"openiotai-{entry_id}",
+            )
+
+            hass.data[DOMAIN][entry_id] = exporter
+            hass.async_create_task(exporter.async_start())
+        else:
+            _LOGGER.info(
+                "OpenIOTAI MQTT exporter not started – configuration incomplete (entry_id=%s)",
+                entry_id,
+            )
+    else:
+        try:
+            exporter.update_options(cfg)
+            _LOGGER.info(
+                "OpenIOTAI MQTT runtime options applied (entry_id=%s)",
+                entry_id,
+            )
         except Exception as err:
             _LOGGER.error(
                 "Failed to apply MQTT options (entry_id=%s): %s",
                 entry_id,
                 err,
             )
-    else:
-        _LOGGER.warning(
-            "OpenIOTAI MQTT exporter not found (entry_id=%s)",
-            entry_id,
-        )
 
     # ------------------------------------------------------------
     # 2. Update polling interval (DataUpdateCoordinator)
