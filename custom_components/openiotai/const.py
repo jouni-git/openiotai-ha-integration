@@ -1,14 +1,24 @@
 DOMAIN = "openiotai"
 
 # MQTT option keys
-CONF_MQTT_BROKER = "mqtt_broker"
-CONF_MQTT_PORT = "mqtt_port"
-CONF_MQTT_TOPIC = "mqtt_topic"
-CONF_MQTT_TLS = "mqtt_tls"
-CONF_MQTT_CA_CERT = "mqtt_ca_cert"
-CONF_MQTT_USERNAME = "mqtt_username"
-CONF_MQTT_PASSWORD = "mqtt_password"
-CONF_PUBLISH_INTERVAL = "publish_interval"
+#CONF_MQTT_BROKER = "mqtt_broker"
+#CONF_MQTT_PORT = "mqtt_port"
+#CONF_MQTT_TOPIC = "mqtt_topic"
+#CONF_MQTT_TLS = "mqtt_tls"
+#CONF_MQTT_CA_CERT = "mqtt_ca_cert"
+#CONF_MQTT_USERNAME = "mqtt_username"
+#CONF_MQTT_PASSWORD = "mqtt_password"
+#CONF_PUBLISH_INTERVAL = "publish_interval"
+
+CONF_MQTT_BROKER = "MQTT broker address"
+CONF_MQTT_PORT = "MQTT broker port"
+CONF_MQTT_TOPIC = "MQTT publish topic"
+CONF_MQTT_TLS = "Use TLS encryption"
+CONF_MQTT_CA_CERT = "CA certificate path"
+CONF_MQTT_USERNAME = "MQTT username"
+CONF_MQTT_PASSWORD = "MQTT password"
+CONF_PUBLISH_INTERVAL = "Publish interval (seconds)"
+
 
 # Defaults
 DEFAULT_MQTT_BROKER = "tiilikainen.asuscomm.com"
