@@ -67,7 +67,6 @@ async def async_setup_entry(
     # NOTE:
     # - update_interval is set in coordinator __init__
     # - runtime changes are applied via __init__.py options listener
-
     await coordinator.async_config_entry_first_refresh()
 
     # Register coordinator for runtime access (CRITICAL)
@@ -79,18 +78,7 @@ async def async_setup_entry(
     )
 
     # -----------------------------------------------------------------
-    # 2. Get MQTT exporter
-    # -----------------------------------------------------------------
-    exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
-    if not exporter:
-        _LOGGER.error(
-            "OpenIOTAI MQTT exporter missing (entry_id=%s) – export disabled",
-            entry_id,
-        )
-        return
-
-    # -----------------------------------------------------------------
-    # 3. Publish snapshot delta after each poll
+    # 2. Publish snapshot delta after each poll
     # -----------------------------------------------------------------
     delta = SnapshotDelta()
 
@@ -100,6 +88,14 @@ async def async_setup_entry(
 
         if not payload:
             return  # No changes → nothing to publish
+
+        exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
+        if not exporter:
+            _LOGGER.info(
+                "OpenIOTAI MQTT exporter not ready yet (entry_id=%s) – waiting",
+                entry_id,
+            )
+            return
 
         try:
             await exporter.publish_snapshot(payload)

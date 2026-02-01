@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     DOMAIN,
@@ -39,15 +37,16 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 # ---------------------------------------------------------------------
-# Options update listener (NO reload, secure logging)
+# Options update listener (NO reload)
 # ---------------------------------------------------------------------
 SENSITIVE_KEYS = {
-    "mqtt_password",
+    CONF_MQTT_PASSWORD,
     "password",
     "token",
     "api_key",
-    "mqtt_ca_cert",
+    CONF_MQTT_CA_CERT,
 }
+
 
 def _sanitize_cfg(cfg: dict) -> dict:
     """Mask sensitive values for safe logging."""
@@ -64,9 +63,6 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     # Merge config entry data + options (options override data)
     cfg = {**entry.data, **entry.options}
 
-    # ------------------------------------------------------------
-    # Log options update (safe)
-    # ------------------------------------------------------------
     _LOGGER.info(
         "OpenIOTAI options updated (entry_id=%s): publish_interval=%ss",
         entry_id,
@@ -80,7 +76,7 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
     )
 
     # ------------------------------------------------------------
-    # 1. Ensure MQTT exporter exists (create if needed)
+    # 1. Update / create MQTT exporter
     # ------------------------------------------------------------
     exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].get(entry_id)
 
@@ -90,7 +86,20 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
         CONF_MQTT_TOPIC,
     )
 
-    if not exporter:
+    if exporter:
+        try:
+            exporter.update_options(cfg)
+            _LOGGER.info(
+                "OpenIOTAI MQTT runtime options applied (entry_id=%s)",
+                entry_id,
+            )
+        except Exception as err:
+            _LOGGER.error(
+                "Failed to apply MQTT options (entry_id=%s): %s",
+                entry_id,
+                err,
+            )
+    else:
         if all(k in cfg for k in mqtt_required):
             _LOGGER.info(
                 "OpenIOTAI MQTT configuration complete – creating exporter (entry_id=%s)",
@@ -109,24 +118,11 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
             )
 
             hass.data[DOMAIN][entry_id] = exporter
-            hass.async_create_task(exporter.async_start())
+            await exporter.async_start()
         else:
             _LOGGER.info(
                 "OpenIOTAI MQTT exporter not started – configuration incomplete (entry_id=%s)",
                 entry_id,
-            )
-    else:
-        try:
-            exporter.update_options(cfg)
-            _LOGGER.info(
-                "OpenIOTAI MQTT runtime options applied (entry_id=%s)",
-                entry_id,
-            )
-        except Exception as err:
-            _LOGGER.error(
-                "Failed to apply MQTT options (entry_id=%s): %s",
-                entry_id,
-                err,
             )
 
     # ------------------------------------------------------------
@@ -147,9 +143,7 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
         )
         interval_sec = DEFAULT_PUBLISH_INTERVAL
 
-    coordinators = hass.data.get(DOMAIN, {}).get("coordinators", {})
-    coordinator = coordinators.get(entry_id)
-
+    coordinator = hass.data.get(DOMAIN, {}).get("coordinators", {}).get(entry_id)
     if not coordinator:
         _LOGGER.warning(
             "OpenIOTAI coordinator not found – polling interval not updated "
@@ -180,31 +174,26 @@ async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
 # ---------------------------------------------------------------------
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OpenIOTAI from a config entry."""
-
     entry_id = entry.entry_id
     _LOGGER.info("Setting up OpenIOTAI (entry_id=%s)", entry_id)
 
-    # Ensure base storage
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN].setdefault("coordinators", {})
 
-    # Merge config entry data + options (options override)
     cfg = {**entry.data, **entry.options}
 
-    required = (
+    # ------------------------------------------------------------
+    # 1. Create MQTT exporter if configuration is complete
+    # ------------------------------------------------------------
+    mqtt_required = (
         CONF_MQTT_BROKER,
         CONF_MQTT_PORT,
         CONF_MQTT_TOPIC,
     )
 
-    exporter: OpenIOTAIMQTTExporter | None = None
-
-    # ------------------------------------------------------------
-    # 1. Create AND START MQTT exporter synchronously (CRITICAL)
-    # ------------------------------------------------------------
-    if all(k in cfg for k in required):
+    if all(k in cfg for k in mqtt_required):
         _LOGGER.info(
-            "OpenIOTAI MQTT configuration complete – initializing exporter (entry_id=%s)",
+            "OpenIOTAI MQTT configuration complete – starting exporter (entry_id=%s)",
             entry_id,
         )
 
@@ -219,16 +208,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             client_id=f"openiotai-{entry_id}",
         )
 
-        # 🔒 Store exporter BEFORE any platform is forwarded
         hass.data[DOMAIN][entry_id] = exporter
-
-        # 🔥 IMPORTANT: await start – no fire-and-forget
         await exporter.async_start()
-
     else:
         _LOGGER.info(
-            "OpenIOTAI MQTT not started yet – configuration incomplete "
-            "(configure options to enable MQTT, entry_id=%s)",
+            "OpenIOTAI MQTT not started yet – configuration incomplete (entry_id=%s)",
             entry_id,
         )
 
@@ -240,7 +224,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # ------------------------------------------------------------
-    # 3. Forward platforms ONLY after exporter is ready
+    # 3. Forward platforms
     # ------------------------------------------------------------
     await hass.config_entries.async_forward_entry_setups(
         entry,
@@ -255,7 +239,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-
 # ---------------------------------------------------------------------
 # Entry unload
 # ---------------------------------------------------------------------
@@ -264,13 +247,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry_id = entry.entry_id
     unload_ok = True
 
-    # Unload platforms
     for platform in PLATFORMS:
         unload_ok &= await hass.config_entries.async_forward_entry_unload(
             entry, platform
         )
 
-    # Stop MQTT runtime
     exporter: OpenIOTAIMQTTExporter | None = hass.data[DOMAIN].pop(entry_id, None)
     if exporter:
         try:
@@ -282,7 +263,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 err,
             )
 
-    # Remove coordinator reference
     hass.data[DOMAIN]["coordinators"].pop(entry_id, None)
 
     return unload_ok
