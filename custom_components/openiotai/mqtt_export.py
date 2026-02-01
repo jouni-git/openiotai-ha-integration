@@ -339,21 +339,72 @@ class OpenIOTAIMQTTExporter:
     # Connection helpers
     # ------------------------------------------------------------------
     def _ensure_client(self) -> None:
-        """Create and configure the Paho client if missing."""
+        """Create and configure the Paho client if missing.
+
+        Must ALWAYS set self._client when it returns successfully.
+        """
         if self._client is not None:
+            _LOGGER.debug("MQTT client already exists (client_id=%s)", self._conn_cfg.client_id)
             return
 
-        # Use MQTT v3.1.1 explicitly to avoid protocol surprises
-        client = mqtt.Client(client_id=self._conn_cfg.client_id, protocol=mqtt.MQTTv311)
+        _LOGGER.info(
+            "Creating MQTT client (broker=%s:%s, client_id=%s)",
+            self._conn_cfg.broker,
+            self._conn_cfg.port,
+            self._conn_cfg.client_id,
+        )
 
-        if self._conn_cfg.username:
-            client.username_pw_set(self._conn_cfg.username, self._conn_cfg.password)
-
-        # Important: disable built-in reconnect delays; we control reconnect from _run()
         try:
-            client.reconnect_delay_set(min_delay=1, max_delay=1)
-        except Exception:
-            pass
+            client = mqtt.Client(client_id=self._conn_cfg.client_id, protocol=mqtt.MQTTv311)
+
+            if self._conn_cfg.username:
+                client.username_pw_set(self._conn_cfg.username, self._conn_cfg.password)
+
+            try:
+                client.reconnect_delay_set(min_delay=1, max_delay=1)
+            except Exception:
+                pass
+
+            def _on_connect(_client, _userdata, _flags, rc, _properties=None):
+                self._conn_rc = rc
+                self.connected = (rc == 0)
+                self.last_error = None if rc == 0 else f"connack rc={rc}"
+
+                if rc == 0:
+                    self._reported_runtime_error = False
+                    _LOGGER.info("MQTT connected (rc=%s)", rc)
+                elif rc in (4, 5):
+                    _LOGGER.info("MQTT connect rejected (auth) (rc=%s)", rc)
+                else:
+                    _LOGGER.info("MQTT connect rejected (rc=%s)", rc)
+
+                if self._conn_event and self._loop:
+                    self._loop.call_soon_threadsafe(self._conn_event.set)
+
+            def _on_disconnect(_client, _userdata, rc, _properties=None):
+                self.connected = False
+                _LOGGER.info("MQTT disconnected (rc=%s)", rc)
+
+                if rc != 0 and self._loop and not getattr(self, "_intentional_disconnect", False):
+                    self._loop.call_soon_threadsafe(self._reconnect_event.set)
+
+            client.on_connect = _on_connect
+            client.on_disconnect = _on_disconnect
+
+            # ✅ The ONE source of truth:
+            self._client = client
+            self._tls_configured = False
+            self._loop_started = False
+
+            _LOGGER.info("MQTT client created successfully (has_client=%s)", self._client is not None)
+
+        except Exception as exc:
+            # Ensure we do NOT leave half-initialized state behind
+            self._client = None
+            self._tls_configured = False
+            self._loop_started = False
+            _LOGGER.error("MQTT client creation failed: %s", exc)
+            raise
 
 
     def _on_connect(_client, _userdata, _flags, rc, _properties=None):
@@ -539,22 +590,18 @@ class OpenIOTAIMQTTExporter:
     async def _ensure_connected(self) -> None:
         """Ensure MQTT client is fully connected (client → TLS → connect)."""
         async with self._lock:
-
-            # 1️⃣ Ensure client exists FIRST
             if self._client is None:
-                _LOGGER.info(
-                    "Creating MQTT client (broker=%s:%s)",
-                    self._conn_cfg.broker,
-                    self._conn_cfg.port,
-                )
                 self._ensure_client()
-                self._tls_configured = False
-                self._loop_started = False
 
-            # 2️⃣ Configure TLS only AFTER client exists
+            # 🔥 Hard guarantee (if this triggers, something is overwriting self._client)
+            if self._client is None:
+                raise CannotConnect(
+                    f"_ensure_client() returned but self._client is still None "
+                    f"(broker={self._conn_cfg.broker}:{self._conn_cfg.port})"
+                )
+
             await self._ensure_tls()
 
-            # 3️⃣ Attempt connect if not connected
             if not self.connected:
                 await self._connect()
 
