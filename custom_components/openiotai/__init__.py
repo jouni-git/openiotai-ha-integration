@@ -156,42 +156,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up OpenIOTAI from a config entry."""
     _LOGGER.info("Setting up OpenIOTAI (entry_id=%s)", entry.entry_id)
 
-    cfg = entry.options or entry.data
+    # Merge data + options (options override)
+    cfg = {**entry.data, **entry.options}
 
-    try:
-        exporter = OpenIOTAIMQTTExporter(
-            broker=cfg[CONF_MQTT_BROKER],
-            port=cfg[CONF_MQTT_PORT],
-            topic=cfg[CONF_MQTT_TOPIC],
-            use_tls=cfg.get(CONF_MQTT_TLS, False),
-            ca_cert=cfg.get(CONF_MQTT_CA_CERT),
-            username=cfg.get(CONF_MQTT_USERNAME),
-            password=cfg.get(CONF_MQTT_PASSWORD),
-            client_id=f"openiotai-{entry.entry_id}",
+    required = (
+        CONF_MQTT_BROKER,
+        CONF_MQTT_PORT,
+        CONF_MQTT_TOPIC,
+    )
+
+    if not all(k in cfg for k in required):
+        _LOGGER.info(
+            "OpenIOTAI MQTT not started yet – configuration incomplete "
+            "(configure options to enable MQTT)"
         )
-    except KeyError as exc:
-        raise ConfigEntryNotReady(
-            "Incomplete MQTT configuration"
-        ) from exc
+        # Still forward platforms (coordinator works without MQTT)
+        await hass.config_entries.async_forward_entry_setups(
+            entry,
+            PLATFORMS,
+        )
+        return True
 
-    # Store exporter for runtime access
+    exporter = OpenIOTAIMQTTExporter(
+        broker=cfg[CONF_MQTT_BROKER],
+        port=cfg[CONF_MQTT_PORT],
+        topic=cfg[CONF_MQTT_TOPIC],
+        use_tls=cfg.get(CONF_MQTT_TLS, False),
+        ca_cert=cfg.get(CONF_MQTT_CA_CERT),
+        username=cfg.get(CONF_MQTT_USERNAME),
+        password=cfg.get(CONF_MQTT_PASSWORD),
+        client_id=f"openiotai-{entry.entry_id}",
+    )
+
     hass.data[DOMAIN][entry.entry_id] = exporter
-
-    # Start MQTT runtime (non-blocking)
     hass.async_create_task(exporter.async_start())
 
-    # Register options update listener (NO reload)
     entry.async_on_unload(
         entry.add_update_listener(_options_updated)
     )
 
-    # Forward platforms (sensor.py creates & registers coordinator)
     await hass.config_entries.async_forward_entry_setups(
         entry,
         PLATFORMS,
     )
 
     return True
+
 
 
 # ---------------------------------------------------------------------
