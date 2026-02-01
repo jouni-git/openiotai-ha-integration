@@ -282,15 +282,16 @@ class OpenIOTAIMQTTExporter:
 
         while not self._stop_event.is_set():
             try:
-                # If options require reconnect, do it once here.
+                # If reconnect requested, force hard disconnect
                 if self._reconnect_event.is_set():
                     self._reconnect_event.clear()
                     await self._disconnect(hard=True)
 
+                # 🔥 ALWAYS try to ensure connection
                 await self._ensure_connected()
                 backoff = RECONNECT_INITIAL_SEC
 
-                # Wait for stop or reconnect request
+                # Wait until stop or reconnect requested
                 await self._wait_stop_or_reconnect(timeout=30)
 
             except InvalidAuth as err:
@@ -298,28 +299,25 @@ class OpenIOTAIMQTTExporter:
                 self.last_error = str(err)
                 _LOGGER.warning("MQTT auth rejected: %s", err)
                 await self._disconnect(hard=True)
-                await self._wait_stop_or_reconnect(timeout=RECONNECT_MAX_SEC)
+                await asyncio.sleep(RECONNECT_MAX_SEC)
 
             except (TlsError, CannotConnect) as err:
                 self.connected = False
                 self.last_error = str(err)
-                _LOGGER.info("MQTT connect attempt failed: %s", err)
+                _LOGGER.info("MQTT connect failed, retrying: %s", err)
                 await self._disconnect(hard=True)
-                await self._wait_stop_or_reconnect(timeout=backoff)
+                await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX_SEC)
 
             except Exception as err:
                 self.connected = False
                 self.last_error = str(err)
-                if not self._reported_runtime_error:
-                    _LOGGER.info("MQTT runtime error, retrying: %s", err)
-                    self._reported_runtime_error = True
-                else:
-                    _LOGGER.debug("MQTT runtime error (will retry): %s", err)
-
+                _LOGGER.info("MQTT runtime error, retrying: %s", err)
                 await self._disconnect(hard=True)
-                await self._wait_stop_or_reconnect(timeout=backoff)
+                await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, RECONNECT_MAX_SEC)
+
+
 
     async def _wait_stop_or_reconnect(self, timeout: int) -> None:
         """Wait until stop event, reconnect request, or timeout."""
@@ -471,17 +469,25 @@ class OpenIOTAIMQTTExporter:
             raise InvalidAuth(f"connack rc={rc}")
         raise CannotConnect(f"connack rc={rc}")
 
+
     async def _ensure_connected(self) -> None:
-        if self.connected:
-            return
-
+        """Ensure MQTT client is connected. Always attempts connect if not connected."""
         async with self._lock:
-            if self.connected:
-                return
+            # Always (re)create client if missing
+            if self._client is None:
+                self._ensure_client()
+                self._tls_configured = False
+                self._loop_started = False
 
-            self._ensure_client()
+            # Ensure TLS is configured before connect
             await self._ensure_tls()
-            await self._connect()
+
+            # Always attempt connect if not connected
+            if not self.connected:
+                await self._connect()
+
+
+
 
     async def _disconnect(self, *, hard: bool) -> None:
         """Disconnect and stop network loop safely.
